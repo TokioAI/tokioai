@@ -1,24 +1,26 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
 dist/
 build/
-.eggs/
 *.egg
-.env
-.env.*
-!.env.example
-*.json
-!pyproject.toml
-*.key
-*.pem
-*.p12
-vertex-credentials.json
-gcp-sa-key.json
-ssh-keys/
-.venv/
-venv/
-.tokioai_history
-.tokioai_session.json
-.tokioai_costs.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Config (user-specific, created by --setup)
+# ~/.tokioai/.env is the config file — NOT in the repo
+
+# OS
+.DS_Store
+Thumbs.db

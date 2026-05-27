@@ -2,6 +2,7 @@
 """
 TokioAI Ops — Multi-provider AI operations engine.
 
+Based on the production tokio_ops.py from tokioai-v2.
 Supports: Claude Vertex AI, Claude API, OpenAI, Gemini (API key), OpenRouter, Ollama.
 
 Configuration via ~/.tokioai/.env or environment variables.
@@ -139,7 +140,7 @@ def detect_provider() -> str:
     if os.getenv("OLLAMA_HOST"):
         return "ollama"
 
-    return "anthropic"  # default
+    return "anthropic-vertex"  # default
 
 
 def detect_model() -> str:
@@ -156,7 +157,7 @@ def detect_model() -> str:
     if raw:
         return resolve_model(raw)
 
-    # Default per provider
+    # Default per provider — opus is the most capable model
     provider = detect_provider()
     defaults = {
         "anthropic-vertex": "claude-opus-4-6",
@@ -189,14 +190,6 @@ GCP_IP = os.getenv("GCP_SSH_HOST", "")
 GCP_USER = os.getenv("GCP_SSH_USER", "user")
 ROUTER_IP = os.getenv("ROUTER_IP", "")
 
-# Home Assistant (optional — for IoT control: lights, Alexa, sensors, etc.)
-HA_URL = os.getenv("HA_URL", "").rstrip("/")
-HA_TOKEN = os.getenv("HA_TOKEN", "")
-
-
-# ---------------------------------------------------------------------------
-# System prompt — TokioAI personality
-# ---------------------------------------------------------------------------
 
 # Load SOUL.md if it exists — persistent context about infrastructure
 _SOUL_CONTEXT = ""
@@ -218,55 +211,7 @@ MEMORY_DIR = os.path.expanduser("~/.tokioai")
 MEMORY_FILE = os.path.join(MEMORY_DIR, "memory.md")
 TASKS_FILE = os.path.join(MEMORY_DIR, "tasks.json")
 
-# TokioAI Agent API — for shared memory sync across machines.
-# Users running their own TokioAI agent can set TOKIO_AGENT_URL to sync
-# memory across multiple CLI installations (e.g. different PCs).
-# Leave empty to use local-only memory (default for open source users).
-TOKIO_AGENT_URL = os.getenv("TOKIO_AGENT_URL", "")
-
-AGENT_MEMORY_FILE = os.path.join(MEMORY_DIR, "agent_memory.md")
-
-def _sync_memory_from_agent():
-    """Download consolidated memory from TokioAI agent.
-
-    Saves agent memory as a separate file (agent_memory.md) that gets
-    loaded alongside local memory. This avoids merge conflicts and ensures
-    the CLI always has the latest agent knowledge (HA entities, IoT learnings,
-    operational history, etc.)."""
-    if not TOKIO_AGENT_URL:
-        return
-    try:
-        import urllib.request
-        req = urllib.request.Request(f"{TOKIO_AGENT_URL}/memory", method="GET")
-        req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-        remote = data.get("memory", "").strip()
-        if not remote:
-            return
-        os.makedirs(MEMORY_DIR, exist_ok=True)
-        with open(AGENT_MEMORY_FILE, "w") as f:
-            f.write(remote)
-    except Exception:
-        pass  # silently skip if agent unreachable
-
-
-def _push_memory_to_agent(content: str):
-    """Upload local memory to TokioAI agent for sharing across machines."""
-    if not TOKIO_AGENT_URL:
-        return
-    try:
-        import urllib.request
-        payload = json.dumps({"memory": content}).encode()
-        req = urllib.request.Request(f"{TOKIO_AGENT_URL}/memory", data=payload, method="POST")
-        req.add_header("Content-Type", "application/json")
-        urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass  # silently skip if agent unreachable
-
-
 def _load_memory() -> str:
-    """Load persistent memory file."""
     if os.path.isfile(MEMORY_FILE):
         try:
             with open(MEMORY_FILE, "r") as f:
@@ -278,14 +223,11 @@ def _load_memory() -> str:
     return ""
 
 def _save_memory(content: str):
-    """Save persistent memory file and sync to agent."""
     os.makedirs(MEMORY_DIR, exist_ok=True)
     with open(MEMORY_FILE, "w") as f:
         f.write(content)
-    _push_memory_to_agent(content)
 
 def _load_tasks() -> list:
-    """Load persistent task list."""
     if os.path.isfile(TASKS_FILE):
         try:
             with open(TASKS_FILE, "r") as f:
@@ -295,85 +237,41 @@ def _load_tasks() -> list:
     return []
 
 def _save_tasks(tasks: list):
-    """Save persistent task list."""
     os.makedirs(MEMORY_DIR, exist_ok=True)
     with open(TASKS_FILE, "w") as f:
         f.write(json.dumps(tasks, indent=2, ensure_ascii=False))
 
-def _load_agent_memory() -> str:
-    """Load agent memory (synced from TokioAI Agent on startup).
-
-    The full agent memory can be very large (70KB+), so we keep only the
-    most useful sections: IoT learnings, HA entities, SOUL identity, and
-    the most recent operational entries from MEMORY.md (last 30).
-    """
-    if not os.path.isfile(AGENT_MEMORY_FILE):
-        return ""
-    try:
-        with open(AGENT_MEMORY_FILE, "r") as f:
-            full = f.read().strip()
-    except Exception:
-        return ""
-    if not full:
-        return ""
-
-    # Parse sections by ## [Source: ...] headers
-    sections = {}
-    current_key = ""
-    current_lines = []
-    for line in full.splitlines():
-        if line.startswith("## [Source:"):
-            if current_key:
-                sections[current_key] = "\n".join(current_lines)
-            current_key = line
-            current_lines = []
-        else:
-            current_lines.append(line)
-    if current_key:
-        sections[current_key] = "\n".join(current_lines)
-
-    # Build concise output
-    parts = []
-
-    # IoT learnings — always include (small, high value)
-    for key, val in sections.items():
-        if "iot_learnings" in key:
-            parts.append(f"## IoT Learnings\n{val.strip()}")
-
-    # HA entities — compact list
-    for key, val in sections.items():
-        if "Home Assistant" in key:
-            parts.append(f"## Home Assistant Entities\n{val.strip()}")
-
-    # MEMORY.md — last 30 entries (most recent operational knowledge)
-    for key, val in sections.items():
-        if "MEMORY.md" in key:
-            lines = [l for l in val.strip().splitlines() if l.strip()]
-            recent = lines[-30:] if len(lines) > 30 else lines
-            parts.append(f"## Recent Agent Memory (last {len(recent)} entries)\n" + "\n".join(recent))
-
-    return "\n\n".join(parts)
-
 def _build_memory_context() -> str:
-    """Build memory + agent memory + tasks context for system prompt."""
+    """Build rich context from memory and tasks -- injected into system prompt on EVERY turn."""
     parts = []
     mem = _load_memory()
     if mem:
-        parts.append(f"\n\n## Persistent Memory (~/.tokioai/memory.md)\n{mem}")
-    agent_mem = _load_agent_memory()
-    if agent_mem:
-        parts.append(f"\n\n## Agent Knowledge (synced from TokioAI Agent)\n{agent_mem}")
+        parts.append("\n\n## Persistent Memory (~/.tokioai/memory.md)\n" + mem)
     tasks = _load_tasks()
     active = [t for t in tasks if t.get("status") != "done"]
     if active:
-        lines = []
+        tlines = []
         for t in active[-10:]:
             status = t.get("status", "pending")
             icon = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]", "blocked": "[!]"}.get(status, "[ ]")
-            lines.append(f"{icon} {t.get('task', '?')} ({status})")
-        parts.append("\n\n## Active Tasks (~/.tokioai/tasks.json)\n" + "\n".join(lines))
+            line = "%s #%s: %s (%s)" % (icon, t.get("id", "?"), t.get("task", "?"), status)
+            if t.get("plan"):
+                line += "\n    Plan: " + t["plan"]
+            if t.get("current_step"):
+                line += "\n    >>> CURRENT STEP: " + t["current_step"]
+            if t.get("steps_done"):
+                line += "\n    Done: " + ", ".join(t["steps_done"][-5:])
+            if t.get("notes"):
+                line += "\n    Last note: " + str(t["notes"][-1])
+            tlines.append(line)
+        parts.append("\n\n## Active Tasks (~/.tokioai/tasks.json)\n"
+                     "IMPORTANT: Check these tasks. Update current_step as you progress.\n"
+                     + "\n".join(tlines))
     return "".join(parts)
 
+# ---------------------------------------------------------------------------
+# System prompt — TokioAI personality
+# ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT_BASE = """You are TokioAI — specialized in cybersecurity, hacking, engineering, DevOps, and creative problem solving.
 
@@ -413,6 +311,7 @@ You execute commands, fix bugs, deploy infrastructure, audit security, and build
 - Always mask credentials in output.
 - Use Spanish if the user speaks Spanish, English otherwise.
 - Be creative. Think like a hacker. Find elegant solutions.
+- NEVER use emojis in your responses. Use plain text only — emojis render as broken characters on some terminals.
 
 ## Persistent Memory
 You have persistent memory at ~/.tokioai/memory.md that survives across sessions.
@@ -421,30 +320,30 @@ Use the `memory` tool to read/write/append/clear your memory.
 - When the user says "remember this" or "don't forget" — always save it.
 - When starting a new task, check memory first for relevant context.
 - Keep memory concise: facts, not conversations.
-- IMPORTANT: At the START of every new conversation, ALWAYS read your memory first to load context.
 
-## Task Tracking
+## Task Tracking (CRITICAL FOR CONTINUITY)
 You have a persistent task list at ~/.tokioai/tasks.json.
 Use the `task` tool to add/update/list/remove tasks.
-- When starting work, create a task. Update status as you progress.
-- Tasks persist across sessions so the user can resume later.
+
+RULES -- follow these ALWAYS to avoid losing track:
+1. BEFORE starting any non-trivial work: create a task with a plan field listing numbered steps.
+2. As you complete each step: update current_step to the NEXT step.
+3. If context gets compacted or you feel lost: call task list to see where you are.
+4. NEVER skip updating current_step -- it is your lifeline after compaction.
+5. When done: update status to done with a summary note.
 
 ## Sensitive Data
 NEVER output raw passwords, API keys, tokens, or private keys.
 Always mask them: show first 4 and last 4 chars with *** in between.
-Example: ghp_LRsA****2QVVMa"""
+Example: ghp_LRsA****2QVVMa""" + _SOUL_CONTEXT
 
+def _build_system_prompt() -> str:
+    """Rebuild system prompt with FRESH memory and task context on every call."""
+    return _SYSTEM_PROMPT_BASE + _build_memory_context()
 
-def _get_system_prompt() -> str:
-    """Build system prompt dynamically — reloads memory and tasks every call."""
-    return _SYSTEM_PROMPT_BASE + _SOUL_CONTEXT + _build_memory_context()
+# Keep backward compat for any code that reads the module-level var
+SYSTEM_PROMPT = _build_system_prompt()
 
-
-# Sync memory from TokioAI agent at startup (non-blocking, silent on failure)
-_sync_memory_from_agent()
-
-# Keep backward compat for any external references
-SYSTEM_PROMPT = _get_system_prompt()
 
 
 # ---------------------------------------------------------------------------
@@ -580,9 +479,6 @@ TOOLS = [
             "required": ["host", "username", "password"],
         },
     },
-    {
-        "name": "memory",
-        "description": "Persistent memory that survives across sessions. Use to remember user preferences, project context, ongoing work, learned facts. Actions: read (show all memory), write (overwrite all), append (add a note), clear (erase all).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -608,6 +504,8 @@ TOOLS = [
                     "enum": ["add", "update", "list", "remove", "clear_done"],
                 },
                 "task": {"type": "string", "description": "Task description (for add)"},
+                    "plan": {"type": "string", "description": "Numbered plan steps"},
+                    "current_step": {"type": "string", "description": "Which step you are currently on"},
                 "id": {"type": "integer", "description": "Task ID (for update/remove)"},
                 "status": {
                     "type": "string",
@@ -619,101 +517,7 @@ TOOLS = [
             "required": ["action"],
         },
     },
-    {
-        "name": "pidog",
-        "description": "Control PiDog robot via HTTP proxy. Actions: status, sensors, do_action (name: stand/sit/forward/backward/etc, steps), preset (name: bark/howling/hand_shake/high_five), speak (name: single_bark_1/howling/angry), wake_up, patrol, stop_patrol, interactive, stop_interactive, head (yaw/roll/pitch), tail (angle), rgb (mode/color), stop, snapshot. Configure PIDOG_URL in .env.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "description": "Action to perform"},
-                "params": {"type": "object", "description": "Parameters for the action"},
-            },
-            "required": ["action"],
-        },
-    },
-    {
-        "name": "picar",
-        "description": "Control PiCar-X robot via HTTP proxy. Actions: status, sensors, move (direction/speed/duration/angle), camera (pan/tilt), look (direction: center/left/right/up/down), steer (angle), obstacle_avoid (duration/speed), line_track, patrol (pattern/duration/speed), dance, stop, kill, snapshot. Configure PICAR_URL in .env.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "description": "Action to perform"},
-                "params": {"type": "object", "description": "Parameters for the action"},
-            },
-            "required": ["action"],
-        },
-    },
-    {
-        "name": "home_assistant",
-        "description": (
-            "Control smart home devices via Home Assistant REST API. "
-            "Configure HA_URL and HA_TOKEN in .env. Actions:\n"
-            "- get_state: Get state of an entity. Params: entity_id\n"
-            "- call_service: Call any HA service. Params: domain, service, entity_id, data (optional dict)\n"
-            "  Examples: domain='light', service='turn_on', entity_id='light.living_room'\n"
-            "           domain='light', service='turn_on', entity_id='light.living_room', data={'brightness': 200, 'color_name': 'blue'}\n"
-            "           domain='media_player', service='volume_set', entity_id='media_player.jarvis', data={'volume_level': 0.5}\n"
-            "- alexa_play_music: Play music on Alexa. Params: query (search text), device (entity_id or name, default: first media_player)\n"
-            "- alexa_speak: Make Alexa speak text. Params: text, device (optional)\n"
-            "- list_entities: List all HA entities (optionally filtered). Params: domain (optional, e.g. 'light', 'media_player', 'switch')\n"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "description": "Action: get_state, call_service, alexa_play_music, alexa_speak, list_entities"},
-                "entity_id": {"type": "string", "description": "HA entity ID (e.g. light.living_room)"},
-                "domain": {"type": "string", "description": "Service domain (e.g. light, switch, media_player)"},
-                "service": {"type": "string", "description": "Service name (e.g. turn_on, turn_off, toggle, volume_set)"},
-                "data": {"type": "object", "description": "Additional service data (brightness, color_name, volume_level, etc.)"},
-                "query": {"type": "string", "description": "Music search query for alexa_play_music"},
-                "text": {"type": "string", "description": "Text for alexa_speak"},
-                "device": {"type": "string", "description": "Alexa device entity_id or friendly name"},
-            },
-            "required": ["action"],
-        },
-    },
-    {
-        "name": "drone",
-        "description": (
-            "Control a Tello drone via safety proxy. Configure DRONE_URL in .env. Actions:\n"
-            "- status: Get drone status (battery, position, connection, geofence, safety level)\n"
-            "- connect: Connect to drone WiFi. Params: ssid (e.g. TELLO-XXXXX)\n"
-            "- disconnect: Disconnect from drone WiFi\n"
-            "- wifi_status: Check WiFi connection status\n"
-            "- command: Send a drone command. Params: cmd, params (optional dict)\n"
-            "  Available commands:\n"
-            "    takeoff — take off\n"
-            "    land — land\n"
-            "    battery — check battery level\n"
-            "    move — move in a direction. params: {direction: forward/back/left/right/up/down, distance: cm (max 200)}\n"
-            "    rotate — rotate. params: {direction: clockwise/counterclockwise, degrees: 1-360}\n"
-            "    emergency — emergency motor stop\n"
-            "  IMPORTANT: Always check status/battery first. Never fly below 25% battery.\n"
-            "- kill: Emergency stop — cuts motors immediately\n"
-            "- kill_reset: Reset kill switch after emergency stop\n"
-            "- snapshot: Take a photo from the drone camera\n"
-            "- geofence: View current geofence settings (max height, distance, speed)\n"
-            "- audit: View command audit log\n"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "description": "Action: status, connect, disconnect, wifi_status, command, kill, kill_reset, snapshot, geofence, audit"},
-                "cmd": {"type": "string", "description": "Drone command: takeoff, land, battery, move, rotate, emergency"},
-                "params": {"type": "object", "description": "Command params. For move: {direction, distance}. For rotate: {direction, degrees}"},
-                "ssid": {"type": "string", "description": "Drone WiFi SSID for 'connect' action (e.g. TELLO-XXXXX)"},
-            },
-            "required": ["action"],
-        },
-    },
 ]
-
-
-# Robot proxy configuration
-PIDOG_URL = os.getenv("PIDOG_URL", "")
-PICAR_URL = os.getenv("PICAR_URL", "")
-DRONE_URL = os.getenv("DRONE_URL", "")
-ROBOT_TIMEOUT = 15
 
 
 # ---------------------------------------------------------------------------
@@ -992,9 +796,12 @@ def execute_tool(name: str, input_data: dict) -> str:
             new_id = max([t.get("id", 0) for t in tasks], default=0) + 1
             tasks.append({
                 "id": new_id,
-                "task": task_desc,
+                "task": input_data.get("description", input_data.get("task", "unnamed")),
                 "status": "pending",
                 "created": time.strftime("%Y-%m-%d %H:%M"),
+                "plan": input_data.get("plan", ""),
+                "current_step": input_data.get("current_step", ""),
+                "steps_done": [],
                 "notes": [],
             })
             _save_tasks(tasks)
@@ -1005,6 +812,13 @@ def execute_tool(name: str, input_data: dict) -> str:
                 if t.get("id") == tid:
                     if "status" in input_data:
                         t["status"] = input_data["status"]
+                    if "plan" in input_data:
+                        t["plan"] = input_data["plan"]
+                    if "current_step" in input_data:
+                        old_step = t.get("current_step", "")
+                        if old_step and old_step != input_data["current_step"]:
+                            t.setdefault("steps_done", []).append(old_step)
+                        t["current_step"] = input_data["current_step"]
                     if input_data.get("note"):
                         t.setdefault("notes", []).append(input_data["note"])
                     t["updated"] = time.strftime("%Y-%m-%d %H:%M")
@@ -1018,9 +832,16 @@ def execute_tool(name: str, input_data: dict) -> str:
             for t in tasks:
                 status = t.get("status", "pending")
                 icon = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]", "blocked": "[!]"}.get(status, "[ ]")
-                lines.append(f"{icon} #{t['id']} {t['task']} ({status})")
-                for n in t.get("notes", []):
-                    lines.append(f"     → {n}")
+                line = "%s #%s: %s (%s)" % (icon, t["id"], t["task"], status)
+                if t.get("plan"):
+                    line += "\n       Plan: " + t["plan"]
+                if t.get("current_step"):
+                    line += "\n       >>> CURRENT: " + t["current_step"]
+                if t.get("steps_done"):
+                    line += "\n       Completed: " + ", ".join(t["steps_done"][-5:])
+                if t.get("notes"):
+                    line += "\n       Last note: " + str(t["notes"][-1])[:100]
+                lines.append(line)
             return "\n".join(lines)
         elif action == "remove":
             tid = input_data.get("id", 0)
@@ -1034,326 +855,7 @@ def execute_tool(name: str, input_data: dict) -> str:
             return f"Cleared {before - len(tasks)} completed tasks"
         return "Unknown task action"
 
-    elif name in ("pidog", "picar"):
-        action = input_data.get("action", "status")
-        params = input_data.get("params", {})
-        base_url = PIDOG_URL if name == "pidog" else PICAR_URL
-        return _robot_request(base_url, action, params)
-
-    elif name == "home_assistant":
-        return _ha_execute(input_data)
-
-    elif name == "drone":
-        return _drone_execute(input_data)
-
     return f"ERROR: Unknown tool '{name}'"
-
-
-def _robot_request(base_url: str, action: str, params: dict = None) -> str:
-    """Send HTTP request to a robot proxy (PiDog or PiCar-X)."""
-    if not base_url:
-        return "Robot not configured. Set PIDOG_URL or PICAR_URL in ~/.tokioai/.env"
-    import urllib.request
-    import urllib.error
-
-    # Action -> endpoint mapping
-    get_actions = {"status", "sensors", "sounds", "actions", "snapshot"}
-    timeout = ROBOT_TIMEOUT
-
-    if action in get_actions:
-        path = f"/{action}"
-        url = f"{base_url}{path}"
-        try:
-            req = urllib.request.Request(url)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = resp.read().decode('utf-8', errors='replace')
-            try:
-                return json.dumps(json.loads(data), indent=2, ensure_ascii=False)
-            except json.JSONDecodeError:
-                return data[:8000]
-        except urllib.error.URLError as e:
-            return f"ERROR: Robot no responde ({url}): {e.reason}"
-        except Exception as e:
-            return f"ERROR: {e}"
-    else:
-        # POST actions
-        path_map = {
-            "do_action": "/action", "preset": "/preset", "speak": "/speak",
-            "wake_up": "/wake_up", "patrol": "/patrol", "stop_patrol": "/stop_patrol",
-            "interactive": "/interactive", "stop_interactive": "/stop_interactive",
-            "head": "/head", "tail": "/tail", "rgb": "/rgb", "stop": "/stop",
-            # PiCar specific
-            "move": "/move", "camera": "/camera", "look": "/camera/look",
-            "steer": "/steer", "obstacle_avoid": "/obstacle_avoid",
-            "line_track": "/line_track", "dance": "/dance",
-            "servo_test": "/servo_test", "motor_test": "/motor_test",
-            "calibrate": "/calibrate", "init": "/init", "kill": "/kill",
-        }
-        path = path_map.get(action, f"/{action}")
-        url = f"{base_url}{path}"
-        body = json.dumps(params or {}).encode('utf-8')
-        try:
-            req = urllib.request.Request(url, data=body,
-                                         headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=max(timeout, 20)) as resp:
-                data = resp.read().decode('utf-8', errors='replace')
-            try:
-                return json.dumps(json.loads(data), indent=2, ensure_ascii=False)
-            except json.JSONDecodeError:
-                return data[:8000]
-        except urllib.error.URLError as e:
-            return f"ERROR: Robot no responde ({url}): {e.reason}"
-        except Exception as e:
-            return f"ERROR: {e}"
-
-
-# ---------------------------------------------------------------------------
-# Home Assistant integration
-# ---------------------------------------------------------------------------
-
-def _ha_request(method: str, path: str, json_payload: dict = None, timeout: int = 15):
-    """Make a request to the Home Assistant REST API. Returns (response_dict_or_list, error_str)."""
-    if not HA_URL:
-        return None, "HA_URL not configured. Set HA_URL in ~/.tokioai/.env"
-    if not HA_TOKEN:
-        return None, "HA_TOKEN not configured. Set HA_TOKEN in ~/.tokioai/.env"
-    import urllib.request
-    import urllib.error
-    url = f"{HA_URL}{path}"
-    body = json.dumps(json_payload).encode("utf-8") if json_payload else None
-    req = urllib.request.Request(url, data=body, method=method.upper())
-    req.add_header("Authorization", f"Bearer {HA_TOKEN}")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read().decode("utf-8", errors="replace")
-        return json.loads(data) if data.strip() else {}, ""
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:400] if e.fp else ""
-        return None, f"HTTP {e.code}: {body}"
-    except urllib.error.URLError as e:
-        return None, f"Connection error: {e.reason}"
-    except Exception as e:
-        return None, str(e)
-
-
-def _ha_execute(input_data: dict) -> str:
-    """Execute a Home Assistant action."""
-    action = input_data.get("action", "")
-
-    if action == "get_state":
-        entity_id = input_data.get("entity_id", "")
-        if not entity_id:
-            return "ERROR: entity_id required for get_state"
-        data, err = _ha_request("GET", f"/api/states/{entity_id}")
-        if err:
-            return f"ERROR: {err}"
-        state = data.get("state", "unknown")
-        attrs = data.get("attributes", {})
-        friendly = attrs.get("friendly_name", entity_id)
-        parts = [f"{friendly}: {state}"]
-        for k in ("brightness", "color_temp", "rgb_color", "volume_level",
-                   "media_title", "media_artist", "source", "temperature",
-                   "humidity", "battery_level", "unit_of_measurement"):
-            if k in attrs:
-                parts.append(f"  {k}: {attrs[k]}")
-        return "\n".join(parts)
-
-    elif action == "call_service":
-        domain = input_data.get("domain", "")
-        service = input_data.get("service", "")
-        entity_id = input_data.get("entity_id", "")
-        extra_data = input_data.get("data", {})
-        if not domain or not service:
-            return "ERROR: domain and service required for call_service"
-        payload = {}
-        if entity_id:
-            payload["entity_id"] = entity_id
-        if extra_data:
-            payload.update(extra_data)
-        data, err = _ha_request("POST", f"/api/services/{domain}/{service}", json_payload=payload)
-        if err:
-            return f"ERROR: {err}"
-        return f"OK: {domain}/{service} called" + (f" on {entity_id}" if entity_id else "")
-
-    elif action == "alexa_play_music":
-        query = input_data.get("query", "")
-        device = input_data.get("device", "")
-        if not query:
-            return "ERROR: query required for alexa_play_music"
-        # Resolve device — find first media_player if not specified
-        entity_id = _ha_resolve_media_player(device)
-        # Turn on and set volume
-        _ha_request("POST", "/api/services/media_player/turn_on",
-                    json_payload={"entity_id": entity_id}, timeout=10)
-        _ha_request("POST", "/api/services/media_player/volume_set",
-                    json_payload={"entity_id": entity_id, "volume_level": 0.35}, timeout=10)
-        # Try AMAZON_MUSIC first
-        _, err1 = _ha_request("POST", "/api/services/media_player/play_media",
-                              json_payload={"entity_id": entity_id,
-                                           "media_content_type": "AMAZON_MUSIC",
-                                           "media_content_id": query})
-        if not err1:
-            time.sleep(2)
-            playing = _ha_check_playing(entity_id)
-            if playing:
-                return playing
-        # Try generic music type
-        _, err2 = _ha_request("POST", "/api/services/media_player/play_media",
-                              json_payload={"entity_id": entity_id,
-                                           "media_content_type": "music",
-                                           "media_content_id": query})
-        if not err2:
-            time.sleep(2)
-            playing = _ha_check_playing(entity_id)
-            if playing:
-                return playing
-        # Fallback: alexa_media notify (voice command)
-        _, err3 = _ha_request("POST", "/api/services/notify/alexa_media",
-                              json_payload={"message": f"play {query}",
-                                           "target": [entity_id],
-                                           "data": {"type": "announce"}})
-        if not err3:
-            time.sleep(3)
-            playing = _ha_check_playing(entity_id)
-            if playing:
-                return playing
-            return f"Command sent to {entity_id}: play {query}"
-        return f"ERROR: Could not play music. Errors: {err1 or ''} | {err2 or ''} | {err3 or ''}"
-
-    elif action == "alexa_speak":
-        text = input_data.get("text", "")
-        device = input_data.get("device", "")
-        if not text:
-            return "ERROR: text required for alexa_speak"
-        entity_id = _ha_resolve_media_player(device)
-        # Try notify/alexa_media (TTS)
-        _, err = _ha_request("POST", "/api/services/notify/alexa_media",
-                             json_payload={"message": text,
-                                          "target": [entity_id],
-                                          "data": {"type": "tts"}})
-        if not err:
-            return f"OK: Alexa speaking on {entity_id}: '{text}'"
-        # Fallback: media_player/play_media with TTS
-        _, err2 = _ha_request("POST", "/api/services/media_player/play_media",
-                              json_payload={"entity_id": entity_id,
-                                           "media_content_id": text,
-                                           "media_content_type": "tts"})
-        if not err2:
-            return f"OK: TTS sent to {entity_id}: '{text}'"
-        return f"ERROR: Could not send TTS. {err} | {err2}"
-
-    elif action == "list_entities":
-        domain_filter = input_data.get("domain", "")
-        data, err = _ha_request("GET", "/api/states")
-        if err:
-            return f"ERROR: {err}"
-        if not isinstance(data, list):
-            return "ERROR: Unexpected response format"
-        lines = []
-        for entity in data:
-            eid = entity.get("entity_id", "")
-            if domain_filter and not eid.startswith(f"{domain_filter}."):
-                continue
-            state = entity.get("state", "unknown")
-            friendly = entity.get("attributes", {}).get("friendly_name", "")
-            label = f"{friendly} ({eid})" if friendly else eid
-            lines.append(f"- {label}: {state}")
-        if not lines:
-            return f"No entities found" + (f" for domain '{domain_filter}'" if domain_filter else "")
-        return f"Found {len(lines)} entities:\n" + "\n".join(sorted(lines))
-
-    return f"ERROR: Unknown home_assistant action '{action}'. Use: get_state, call_service, alexa_play_music, alexa_speak, list_entities"
-
-
-def _ha_resolve_media_player(device: str) -> str:
-    """Resolve a device name/id to a media_player entity_id."""
-    if not device:
-        # Try to find first media_player
-        data, err = _ha_request("GET", "/api/states", timeout=10)
-        if not err and isinstance(data, list):
-            for entity in data:
-                eid = entity.get("entity_id", "")
-                if eid.startswith("media_player."):
-                    return eid
-        return "media_player.jarvis"  # fallback
-    if device.startswith("media_player."):
-        return device
-    slug = device.lower().replace(" ", "_")
-    return f"media_player.{slug}"
-
-
-def _ha_check_playing(entity_id: str) -> str:
-    """Check if a media_player is currently playing. Returns status string or empty."""
-    data, err = _ha_request("GET", f"/api/states/{entity_id}", timeout=10)
-    if err or not data:
-        return ""
-    if data.get("state") == "playing":
-        attrs = data.get("attributes", {})
-        title = attrs.get("media_title", "")
-        artist = attrs.get("media_artist", "")
-        now = f" ({title}" + (f" - {artist})" if artist else ")") if title else ""
-        return f"Playing on {entity_id}{now}"
-    return ""
-
-
-# ---------------------------------------------------------------------------
-# Drone integration
-# ---------------------------------------------------------------------------
-
-def _drone_execute(input_data: dict) -> str:
-    """Execute a drone action via the safety proxy."""
-    if not DRONE_URL:
-        return "Drone not configured. Set DRONE_URL in ~/.tokioai/.env (e.g. http://192.168.1.100:5001)"
-    import urllib.request
-    import urllib.error
-
-    action = input_data.get("action", "status")
-    base = DRONE_URL.rstrip("/")
-    timeout = 20
-
-    action_map = {
-        "status":      ("GET",  "/drone/status",          None),
-        "connect":     ("POST", "/drone/wifi/connect",     {"ssid": input_data.get("ssid", "")}),
-        "disconnect":  ("POST", "/drone/wifi/disconnect",  {}),
-        "wifi_status": ("GET",  "/drone/wifi/status",      None),
-        "command":     ("POST", "/drone/command",          {"command": input_data.get("cmd", ""), "params": input_data.get("params", {})}),
-        "kill":        ("POST", "/drone/kill",             {}),
-        "kill_reset":  ("POST", "/drone/kill/reset",       {}),
-        "snapshot":    ("POST", "/drone/snapshot",         {}),
-        "geofence":    ("GET",  "/drone/geofence",         None),
-        "audit":       ("GET",  "/drone/audit",            None),
-    }
-
-    if action not in action_map:
-        return f"ERROR: Unknown drone action '{action}'. Available: {', '.join(action_map.keys())}"
-
-    method, path, payload = action_map[action]
-    url = f"{base}{path}"
-
-    try:
-        if method == "GET":
-            req = urllib.request.Request(url)
-        else:
-            # Clean None values from payload
-            if payload:
-                payload = {k: v for k, v in payload.items() if v is not None}
-            body = json.dumps(payload or {}).encode("utf-8")
-            req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
-
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read().decode("utf-8", errors="replace")
-        try:
-            return json.dumps(json.loads(data), indent=2, ensure_ascii=False)
-        except json.JSONDecodeError:
-            return data[:8000]
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:400] if e.fp else ""
-        return f"ERROR: HTTP {e.code}: {body}"
-    except urllib.error.URLError as e:
-        return f"ERROR: Drone proxy not reachable ({url}): {e.reason}"
-    except Exception as e:
-        return f"ERROR: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -1423,6 +925,7 @@ def init_client(provider: str):
             print("\033[31mERROR: Gemini Vertex project not configured.\033[0m")
             print("Set GEMINI_VERTEX_PROJECT in ~/.tokioai/.env")
             sys.exit(1)
+        # Use Gemini-specific SA (different from Claude SA)
         sa_paths = [
             os.getenv("GEMINI_SA_PATH", ""),
             os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""),
@@ -1549,10 +1052,10 @@ class TokioOps:
     """TokioAI Operations engine with native tool use."""
 
     # Auto-compact: triggers on message count OR estimated token size
-    COMPACT_THRESHOLD = 14        # compact early to save $$$
-    COMPACT_KEEP_RECENT = 6       # keep last N messages intact
-    COMPACT_TOKEN_LIMIT = 40000   # compact if estimated tokens exceed this
-    MAX_TOOL_RESULT = 8000        # truncate tool results beyond this (chars ~2K tokens)
+    COMPACT_THRESHOLD = 40        # keep more context before compacting
+    COMPACT_KEEP_RECENT = 16      # keep last N messages intact
+    COMPACT_TOKEN_LIMIT = 100000  # compact if estimated tokens exceed this
+    MAX_TOOL_RESULT = 12000       # truncate tool results beyond this
     # Cheap model for summarization (Sonnet = ~5x cheaper than Opus)
     COMPACT_MODEL = "claude-sonnet-4-20250514"
 
@@ -1576,7 +1079,7 @@ class TokioOps:
         self._client, self._client_type = init_client(self._provider_name)
         self._messages: list[dict] = []
         self._gemini_history: list = []  # Persistent Gemini contents
-        self._max_turns = 25
+        self._max_turns = 25  # default tool rounds per request
         self._max_rounds = 25
         self._max_time = 600
         self._total_input_tokens = 0
@@ -1669,6 +1172,49 @@ class TokioOps:
                     return True
         return False
 
+    def _fix_orphaned_tool_use(self):
+        """Scan messages and inject missing tool_result blocks to prevent API errors."""
+        i = 0
+        while i < len(self._messages):
+            msg = self._messages[i]
+            if msg.get("role") != "assistant" or not isinstance(msg.get("content"), list):
+                i += 1
+                continue
+            tool_use_ids = [
+                item["id"] if isinstance(item, dict) else item.id
+                for item in msg["content"]
+                if (isinstance(item, dict) and item.get("type") == "tool_use") or
+                   (hasattr(item, "type") and getattr(item, "type", "") == "tool_use")
+            ]
+            if not tool_use_ids:
+                i += 1
+                continue
+            dummy = [{"type": "tool_result", "tool_use_id": uid,
+                      "content": "[Result unavailable — history recovered]"}
+                     for uid in tool_use_ids]
+            if i + 1 < len(self._messages):
+                nxt = self._messages[i + 1]
+                if nxt.get("role") == "user" and isinstance(nxt.get("content"), list):
+                    result_ids = {
+                        item.get("tool_use_id", "") if isinstance(item, dict) else ""
+                        for item in nxt["content"]
+                        if isinstance(item, dict) and item.get("type") == "tool_result"
+                    }
+                    missing = [uid for uid in tool_use_ids if uid not in result_ids]
+                    if missing:
+                        for uid in missing:
+                            nxt["content"].append({"type": "tool_result", "tool_use_id": uid,
+                                                   "content": "[Result unavailable — history recovered]"})
+                    i += 2
+                    continue
+                if nxt.get("role") == "user" and isinstance(nxt.get("content", ""), str):
+                    nxt["content"] = dummy + [{"type": "text", "text": nxt["content"]}]
+                    i += 2
+                    continue
+            self._messages.insert(i + 1, {"role": "user", "content": dummy})
+            i += 2
+            continue
+
     def _find_safe_cut(self, target_keep: int) -> int:
         """Find a safe index to cut messages so we don't split tool_use/tool_result pairs.
         Returns the index where recent messages start (everything before gets summarized)."""
@@ -1736,18 +1282,47 @@ class TokioOps:
                 digest_lines.append(f"[{role}] {text}")
 
         digest = "\n".join(digest_lines)
+        # Limit digest size — Sonnet processes this, keep it small and cheap
         if len(digest) > 8000:
             digest = digest[:8000] + "\n... (truncated)"
 
+        _active_tasks_ctx = ""
+        try:
+            _tasks_for_compact = _load_tasks()
+            _active_for_compact = [t for t in _tasks_for_compact if t.get("status") != "done"]
+            if _active_for_compact:
+                _task_lines = []
+                for t in _active_for_compact:
+                    _tl = "- [%s] %s" % (t.get("status", "?"), t.get("task", "?"))
+                    if t.get("plan"):
+                        _tl += " | Plan: " + t["plan"]
+                    if t.get("current_step"):
+                        _tl += " | Current step: " + t["current_step"]
+                    if t.get("notes"):
+                        _tl += " | Notes: " + str(t["notes"][-1])
+                    _task_lines.append(_tl)
+                _active_tasks_ctx = "\nACTIVE TASKS (MUST PRESERVE):\n" + "\n".join(_task_lines)
+        except Exception:
+            pass
+
         summary_prompt = (
-            "Summarize the following conversation history concisely. "
-            "Keep: key decisions, commands run, results, errors, file paths, IPs, and pending tasks. "
-            "Drop: routine tool outputs, repeated attempts, verbose logs.\n\n"
-            f"{digest}"
+            "Summarize the following conversation history. This summary will REPLACE "
+            "the original messages and be the ONLY context available to continue working. "
+            "Be thorough.\n\n"
+            "YOU MUST PRESERVE:\n"
+            "1. The CURRENT TASK and what step we are on\n"
+            "2. The PLAN: what has been done and what remains\n"
+            "3. Key DECISIONS made and WHY\n"
+            "4. Important RESULTS: IPs, paths, configs, command outputs\n"
+            "5. Any ERRORS encountered and how they were resolved\n"
+            "6. The user INTENT: what they want to achieve\n\n"
+            "DROP: verbose tool outputs, repeated attempts, routine logs.\n\n"
+            + f"CONVERSATION:\n{digest}"
+            + f"{_active_tasks_ctx}"
         )
 
         summary = None
-        # Try Gemini Flash first — cheapest option (~$0.0001 per compact)
+        # Always try Gemini Flash first — cheapest option (~$0.0001 per compact)
         try:
             from google import genai
             from google.genai import types as _gtypes
@@ -1784,7 +1359,7 @@ class TokioOps:
                         self._total_output_tokens += getattr(resp.usage, "output_tokens", 0)
                 elif self._client_type == "openai":
                     resp = self._client.chat.completions.create(
-                        model=self._model,
+                        model=self._model,  # uses current model (works with Ollama, OpenAI, OpenRouter)
                         messages=[
                             {"role": "system", "content": "Summarize concisely. Keep: decisions, commands, results, errors, paths, IPs, pending tasks."},
                             {"role": "user", "content": summary_prompt},
@@ -1800,21 +1375,41 @@ class TokioOps:
         if not summary:
             summary = digest[:3000]
 
-        # Inject persistent memory into the summary so it's never lost
-        mem_context = _build_memory_context()
-        summary_with_memory = f"[Previous conversation summary]\n{summary}"
-        if mem_context:
-            summary_with_memory += f"\n\n[Persistent memory — always available]{mem_context}"
-
         # Replace old messages with the summary
         self._messages = [
-            {"role": "user", "content": summary_with_memory},
-            {"role": "assistant", "content": "Understood. I have the context from our previous conversation and persistent memory. Let's continue."},
+            {"role": "user", "content": f"[Previous conversation summary]\n{summary}"},
+            {"role": "assistant", "content": "Understood. I have the context from our previous conversation. Let's continue."},
         ] + recent_msgs
 
         self._compaction_count += 1
+
+        # POST-COMPACTION RECOVERY: inject fresh task context
+        try:
+            _recovery_parts = []
+            _rtasks = _load_tasks()
+            _ractive = [t for t in _rtasks if t.get("status") != "done"]
+            if _ractive:
+                _rlines = []
+                for _rt in _ractive:
+                    _rl = "- [%s] %s" % (_rt.get("status", "?"), _rt.get("task", "?"))
+                    if _rt.get("current_step"):
+                        _rl += " >>> CURRENTLY ON: " + _rt["current_step"]
+                    if _rt.get("plan"):
+                        _rl += " | Plan: " + _rt["plan"]
+                    _rlines.append(_rl)
+                _recovery_parts.append("ACTIVE TASKS:\n" + "\n".join(_rlines))
+            _rmem = _load_memory()
+            if _rmem and len(_rmem) < 3000:
+                _recovery_parts.append("MEMORY SNAPSHOT:\n" + _rmem[:2000])
+            if _recovery_parts:
+                _recovery_msg = "[CONTEXT RECOVERY after compaction]\n" + "\n\n".join(_recovery_parts)
+                self._messages.insert(0, {"role": "user", "content": _recovery_msg})
+                self._messages.insert(1, {"role": "assistant", "content": "I have full context. I know my active tasks and where I left off. Continuing."})
+        except Exception:
+            pass
+
         if on_text:
-            on_text(f"\n⚡ Context compacted ({len(old_msgs)} messages summarized, keeping {len(recent_msgs)} recent)\n")
+            on_text("\n[Context compacted: %d msgs summarized, keeping %d recent]\n" % (len(old_msgs), len(recent_msgs)))
 
     def chat(self, user_input: str, on_tool_start=None, on_tool_end=None,
              on_text=None, on_token=None, stream=False) -> str:
@@ -1842,10 +1437,28 @@ class TokioOps:
 
     def _chat_anthropic(self, user_input, on_tool_start, on_tool_end, on_text) -> str:
         self._compact_messages(on_text)
+        # After compaction, prepend active task context to help LLM orient
+        if self._compaction_count > 0 and len(self._messages) <= 4:
+            try:
+                _task_check = _load_tasks()
+                _active_check = [t for t in _task_check if t.get("status") != "done"]
+                if _active_check:
+                    _ctx_lines = ["[AUTO-CONTEXT: Active tasks after compaction]"]
+                    for _tc in _active_check:
+                        _tcl = "- [%s] %s" % (_tc.get("status", "?"), _tc.get("task", "?"))
+                        if _tc.get("current_step"):
+                            _tcl += " | Current step: " + _tc["current_step"]
+                        _ctx_lines.append(_tcl)
+                    user_input = "\n".join(_ctx_lines) + "\n\nUser message: " + user_input
+            except Exception:
+                pass
         self._messages.append({"role": "user", "content": user_input})
         effective_limit = self._max_rounds if self._max_rounds > 0 else 999999
 
         for turn in range(effective_limit):
+            self._fix_orphaned_tool_use()
+            self._set_state("thinking")
+            self._emit("pre_api", model=self._model, turn=turn)
             # API call with exponential backoff on retryable errors
             response = None
             for attempt in range(MAX_API_RETRIES + 1):
@@ -1853,7 +1466,7 @@ class TokioOps:
                     response = self._client.messages.create(
                         model=self._model,
                         max_tokens=MAX_TOKENS,
-                        system=_get_system_prompt(),
+                        system=_build_system_prompt(),
                         tools=TOOLS,
                         messages=self._messages,
                         timeout=120.0,
@@ -1878,7 +1491,7 @@ class TokioOps:
                         continue
                     return f"API Error: {e}"
             if response is None:
-                continue  # compacted, retry outer loop
+                continue  # context was compacted, retry
 
             # Track tokens
             if hasattr(response, "usage"):
@@ -1918,12 +1531,15 @@ class TokioOps:
                         serialized_content.append({"type": block.type})
                 self._messages.append({"role": "assistant", "content": serialized_content})
 
+                self._set_state("tool_exec")
                 tool_results = []
                 try:
                     for tb in tool_blocks:
+                        self._emit("pre_tool", name=tb.name, input=tb.input)
                         if on_tool_start:
                             on_tool_start(tb.name, tb.input)
                         result = execute_tool(tb.name, tb.input)
+                        self._emit("post_tool", name=tb.name, result=result)
                         if on_tool_end:
                             on_tool_end(tb.name, result)
                         # Truncate very large tool results to avoid blowing context
@@ -1934,8 +1550,7 @@ class TokioOps:
                             "tool_use_id": tb.id,
                             "content": result,
                         })
-                except KeyboardInterrupt:
-                    # User cancelled — fill missing tool_results to keep history valid
+                except BaseException:
                     answered_ids = {tr["tool_use_id"] for tr in tool_results}
                     for tb in tool_blocks:
                         if tb.id not in answered_ids:
@@ -1945,9 +1560,9 @@ class TokioOps:
                                 "content": "Cancelled by user.",
                             })
                     self._messages.append({"role": "user", "content": tool_results})
-                    raise  # re-raise so interactive.py catches it
-
-                self._messages.append({"role": "user", "content": tool_results})
+                    raise
+                else:
+                    self._messages.append({"role": "user", "content": tool_results})
 
             else:
                 # No tools — extract final text
@@ -1967,10 +1582,26 @@ class TokioOps:
     def _chat_anthropic_stream(self, user_input, on_tool_start, on_tool_end, on_text, on_token) -> str:
         """Anthropic chat with streaming — tokens emitted as they arrive."""
         self._compact_messages(on_text)
+        # After compaction, prepend active task context to help LLM orient
+        if self._compaction_count > 0 and len(self._messages) <= 4:
+            try:
+                _task_check = _load_tasks()
+                _active_check = [t for t in _task_check if t.get("status") != "done"]
+                if _active_check:
+                    _ctx_lines = ["[AUTO-CONTEXT: Active tasks after compaction]"]
+                    for _tc in _active_check:
+                        _tcl = "- [%s] %s" % (_tc.get("status", "?"), _tc.get("task", "?"))
+                        if _tc.get("current_step"):
+                            _tcl += " | Current step: " + _tc["current_step"]
+                        _ctx_lines.append(_tcl)
+                    user_input = "\n".join(_ctx_lines) + "\n\nUser message: " + user_input
+            except Exception:
+                pass
         self._messages.append({"role": "user", "content": user_input})
         effective_limit = self._max_rounds if self._max_rounds > 0 else 999999
 
         for turn in range(effective_limit):
+            self._fix_orphaned_tool_use()
             self._set_state("thinking")
             self._emit("pre_api", model=self._model, turn=turn)
             # API call with backoff
@@ -1980,7 +1611,7 @@ class TokioOps:
                     stream_obj = self._client.messages.create(
                         model=self._model,
                         max_tokens=MAX_TOKENS,
-                        system=_get_system_prompt(),
+                        system=_build_system_prompt(),
                         tools=TOOLS,
                         messages=self._messages,
                         timeout=120.0,
@@ -2105,7 +1736,7 @@ class TokioOps:
                             "tool_use_id": tb["id"],
                             "content": result,
                         })
-                except KeyboardInterrupt:
+                except BaseException:
                     answered_ids = {tr["tool_use_id"] for tr in tool_results}
                     for tb in tool_blocks:
                         if tb["id"] not in answered_ids:
@@ -2116,8 +1747,8 @@ class TokioOps:
                             })
                     self._messages.append({"role": "user", "content": tool_results})
                     raise
-
-                self._messages.append({"role": "user", "content": tool_results})
+                else:
+                    self._messages.append({"role": "user", "content": tool_results})
             else:
                 if not full_text.strip():
                     full_text = "[TokioAI stopped without a response. Type your message to continue, or 'reset' to start over.]"
@@ -2133,18 +1764,34 @@ class TokioOps:
 
     def _chat_openai(self, user_input, on_tool_start, on_tool_end, on_text) -> str:
         self._compact_messages(on_text)
+        # After compaction, prepend active task context to help LLM orient
+        if self._compaction_count > 0 and len(self._messages) <= 4:
+            try:
+                _task_check = _load_tasks()
+                _active_check = [t for t in _task_check if t.get("status") != "done"]
+                if _active_check:
+                    _ctx_lines = ["[AUTO-CONTEXT: Active tasks after compaction]"]
+                    for _tc in _active_check:
+                        _tcl = "- [%s] %s" % (_tc.get("status", "?"), _tc.get("task", "?"))
+                        if _tc.get("current_step"):
+                            _tcl += " | Current step: " + _tc["current_step"]
+                        _ctx_lines.append(_tcl)
+                    user_input = "\n".join(_ctx_lines) + "\n\nUser message: " + user_input
+            except Exception:
+                pass
         self._messages.append({"role": "user", "content": user_input})
         openai_tools = _tools_to_openai(TOOLS)
         effective_limit = self._max_rounds if self._max_rounds > 0 else 999999
 
         for turn in range(effective_limit):
+            self._fix_orphaned_tool_use()
             self._set_state("thinking")
             self._emit("pre_api", provider="openai", turn=turn)
             # API call with exponential backoff
             response = None
             for attempt in range(MAX_API_RETRIES + 1):
                 try:
-                    msgs = [{"role": "system", "content": _get_system_prompt()}] + self._messages
+                    msgs = [{"role": "system", "content": _build_system_prompt()}] + self._messages
                     response = self._client.chat.completions.create(
                         model=self._model,
                         messages=msgs,
@@ -2178,7 +1825,6 @@ class TokioOps:
                 self._total_output_tokens += getattr(response.usage, "completion_tokens", 0)
 
             choice = response.choices[0]
-            msg = choice.message
 
             # Detect max_tokens truncation — retry with resume prompt
             if getattr(choice, "finish_reason", None) == "length":
@@ -2189,6 +1835,7 @@ class TokioOps:
                     if on_text:
                         on_text(text_so_far)
                     continue
+            msg = choice.message
 
             if msg.tool_calls:
                 # Serialize to plain dict so session save (JSON) works
@@ -2239,7 +1886,7 @@ class TokioOps:
                             "tool_call_id": tc.id,
                             "content": result,
                         })
-                except KeyboardInterrupt:
+                except BaseException:
                     answered_ids = {m["tool_call_id"] for m in self._messages if isinstance(m, dict) and m.get("role") == "tool"}
                     for tc in msg.tool_calls:
                         if tc.id not in answered_ids:
@@ -2265,15 +1912,31 @@ class TokioOps:
     def _chat_openai_stream(self, user_input, on_tool_start, on_tool_end, on_text, on_token) -> str:
         """OpenAI chat with streaming — tokens emitted as they arrive."""
         self._compact_messages(on_text)
+        # After compaction, prepend active task context to help LLM orient
+        if self._compaction_count > 0 and len(self._messages) <= 4:
+            try:
+                _task_check = _load_tasks()
+                _active_check = [t for t in _task_check if t.get("status") != "done"]
+                if _active_check:
+                    _ctx_lines = ["[AUTO-CONTEXT: Active tasks after compaction]"]
+                    for _tc in _active_check:
+                        _tcl = "- [%s] %s" % (_tc.get("status", "?"), _tc.get("task", "?"))
+                        if _tc.get("current_step"):
+                            _tcl += " | Current step: " + _tc["current_step"]
+                        _ctx_lines.append(_tcl)
+                    user_input = "\n".join(_ctx_lines) + "\n\nUser message: " + user_input
+            except Exception:
+                pass
         self._messages.append({"role": "user", "content": user_input})
         openai_tools = _tools_to_openai(TOOLS)
         effective_limit = self._max_rounds if self._max_rounds > 0 else 999999
 
         for turn in range(effective_limit):
+            self._fix_orphaned_tool_use()
             stream_obj = None
             for attempt in range(MAX_API_RETRIES + 1):
                 try:
-                    msgs = [{"role": "system", "content": _get_system_prompt()}] + self._messages
+                    msgs = [{"role": "system", "content": _build_system_prompt()}] + self._messages
                     stream_obj = self._client.chat.completions.create(
                         model=self._model,
                         messages=msgs,
@@ -2401,7 +2064,7 @@ class TokioOps:
                             "tool_call_id": tc["id"],
                             "content": result,
                         })
-                except KeyboardInterrupt:
+                except BaseException:
                     answered_ids = {m["tool_call_id"] for m in self._messages if isinstance(m, dict) and m.get("role") == "tool"}
                     for tc in tc_list:
                         if tc["id"] not in answered_ids:
@@ -2460,7 +2123,7 @@ class TokioOps:
             contents = list(self._gemini_history)
 
             config = types.GenerateContentConfig(
-                system_instruction=_get_system_prompt(),
+                system_instruction=_build_system_prompt(),
                 tools=gemini_tools,
                 max_output_tokens=MAX_TOKENS,
             )
@@ -2498,6 +2161,8 @@ class TokioOps:
                 # Guard against empty candidates (safety filters, etc.)
                 if not response.candidates:
                     return "[Gemini returned no response (possibly filtered). Try rephrasing or use a different model.]"
+
+                # Check for function calls
                 fn_calls = []
                 text_parts = []
                 for part in response.candidates[0].content.parts:
@@ -2542,6 +2207,7 @@ class TokioOps:
                 ))
 
             # Save final state of conversation to persistent history
+            # (contents has all tool-call turns from this round)
             self._gemini_history = contents
             self._set_state("idle")
             return f"Max tool turns reached ({effective_limit} rounds). You can continue the conversation or type 'reset' to start fresh."

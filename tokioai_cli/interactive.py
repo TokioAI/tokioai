@@ -288,10 +288,13 @@ COST_FILE = os.path.expanduser("~/.tokioai_costs.json")
 
 _CLI_COMMANDS = [
     "exit", "quit", "help", "reset", "compact", "stats", "model", "models", "clear",
-    "unlimited", "persistent", "stop", "config", "memory", "tasks",
+    "unlimited", "persistent", "stop", "config",
     "/status", "/waf", "/health", "/drone", "/threats", "/entity",
     "/sitrep", "/see", "/containers", "/wifi", "/coffee", "/logs", "/ha", "/picar",
     "/gcp", "/diff", "/commit", "/branch",
+    "memory", "tasks",
+    "/medlogin", "/medstatus", "/medlogout",
+    "medlogin", "medrun", "medstatus", "medlogout",
 ]
 
 # Model aliases for "model <tab>" completion
@@ -479,7 +482,6 @@ class CostTracker:
 
 
 _cost_tracker = CostTracker()
-_HIDE_COST = os.getenv("TOKIOAI_HIDE_COST", "").lower() in ("1", "true", "yes")
 
 
 # ═══════════════════════════════════════════════════════
@@ -607,6 +609,7 @@ def _mask_sensitive(text: str) -> str:
 # ═══════════════════════════════════════════════════════
 
 if _IS_WINDOWS:
+    # ASCII-safe icons — many Windows terminals mangle multi-byte emoji
     TOOL_ICONS = {
         "execute_local": ">", "execute_raspi": ">", "execute_gcp": ">",
         "execute_router": ">", "read_file": "R", "write_file": "W",
@@ -733,7 +736,7 @@ def _slash_waf():
         return
     out = _quick_ssh(GCP_IP, SSH_GCP, GCP_USER,
         'curl -s -X POST http://127.0.0.1:8000/api/auth/login -H "Content-Type: application/json" '
-        "-d '{\"username\":\"" + _os.getenv("WAF_USER", "admin") + "\",\"password\":\"" + _os.getenv("WAF_PASSWORD", "") + "\"}' 2>/dev/null")
+        "-d '{\"username\":\"admin\",\"password\":\"admin\"}' 2>/dev/null")
     if not out:
         _safe_print(f"  {C_BRIGHT_RED}❌ WAF API unreachable{C_RESET}\n")
         return
@@ -1040,10 +1043,12 @@ def _slash_diff():
             _safe_print(f"  {C_DIM}No changes{C_RESET}\n")
             return
         _safe_print(f"  {C_GRAY}{r.stdout.strip()}{C_RESET}")
+        # Also show staged
         r2 = _sp.run(["git", "diff", "--cached", "--stat"], capture_output=True, text=True, timeout=10)
         if r2.stdout.strip():
             _safe_print(f"\n  {C_BOLD}Staged:{C_RESET}")
             _safe_print(f"  {C_BRIGHT_GREEN}{r2.stdout.strip()}{C_RESET}")
+        # Untracked
         r3 = _sp.run(["git", "ls-files", "--others", "--exclude-standard"], capture_output=True, text=True, timeout=10)
         if r3.stdout.strip():
             files = r3.stdout.strip().split('\n')[:10]
@@ -1066,6 +1071,7 @@ def _slash_commit():
         if not r.stdout.strip():
             _safe_print(f"  {C_DIM}Nothing to commit{C_RESET}\n")
             return
+        # Show what would be committed
         changes = r.stdout.strip().split('\n')
         _safe_print(f"  {C_BOLD}Changes ({len(changes)}):{C_RESET}")
         for c in changes[:15]:
@@ -1084,6 +1090,7 @@ def _slash_commit():
         if not msg:
             _safe_print(f"  {C_DIM}Cancelled (empty message){C_RESET}")
             return
+        # Stage and commit
         _sp.run(["git", "add", "-A"], capture_output=True, timeout=10)
         r2 = _sp.run(["git", "commit", "-m", msg], capture_output=True, text=True, timeout=15)
         if r2.returncode == 0:
@@ -1105,6 +1112,7 @@ def _slash_branch():
             return
         branch = r.stdout.strip()
         _safe_print(f"  Branch: {C_BRIGHT_CYAN}{branch}{C_RESET}")
+        # Recent commits
         r2 = _sp.run(["git", "log", "--oneline", "-5"], capture_output=True, text=True, timeout=5)
         if r2.stdout.strip():
             _safe_print(f"\n  {C_BOLD}Recent commits:{C_RESET}")
@@ -1136,6 +1144,9 @@ _SLASH_COMMANDS = {
     "/diff": _slash_diff,
     "/commit": _slash_commit,
     "/branch": _slash_branch,
+    "/medlogin": _slash_medlogin,
+    "/medstatus": _slash_medstatus,
+    "/medlogout": _slash_medlogout,
 }
 
 
@@ -1219,6 +1230,11 @@ def show_help():
   {C_BRIGHT_GREEN}/picar{C_RESET}            PiCar-X robot status
   {C_BRIGHT_GREEN}/gcp{C_RESET}              GCP agent health
   {C_BRIGHT_GREEN}/logs{C_RESET}             Entity logs (last 15)
+
+{C_BOLD}Git:{C_RESET}
+  {C_BRIGHT_GREEN}/diff{C_RESET}             Git diff summary
+  {C_BRIGHT_GREEN}/commit{C_RESET}           Quick stage + commit
+  {C_BRIGHT_GREEN}/branch{C_RESET}           Current branch + recent commits
 
 {C_BOLD}Arguments:{C_RESET}
   {C_BRIGHT_CYAN}--persistent{C_RESET}, {C_BRIGHT_CYAN}-p{C_RESET}  Keep working until you say 'stop'
@@ -1365,9 +1381,8 @@ def process_message(ops: TokioOps, user_input: str):
     ops._last_tracked_output = output_t
     if delta_in > 0 or delta_out > 0:
         _cost_tracker.add_usage(ops.model, delta_in, delta_out)
-        if not _HIDE_COST:
-            this_cost = _cost_tracker.estimate_single(ops.model, delta_in, delta_out)
-            parts.append(f"{_ICON_COST} ~{this_cost} (session: {_cost_tracker.format_cost()})")
+        this_cost = _cost_tracker.estimate_single(ops.model, delta_in, delta_out)
+        parts.append(f"{_ICON_COST} ~{this_cost} (session: {_cost_tracker.format_cost()})")
 
     _safe_print(f"\n  {C_GRAY}{f' {_BOX_V} '.join(parts)}{C_RESET}")
 
@@ -1404,7 +1419,7 @@ def run_interactive(
     provider_override: str = None,
     model_override: str = None,
 ):
-    """Run the interactive loop. ZERO terminal manipulation."""
+    """Run the interactive CLI loop. ZERO terminal manipulation."""
     global _terminal_saved_state
     _load_history()
 
@@ -1490,7 +1505,7 @@ def run_interactive(
     _safe_print()
 
     while True:
-        # Restore terminal to clean state before every prompt
+        # Restore terminal to clean state before every prompt (only if needed)
         if _terminal_saved_state and not _IS_WINDOWS:
             try:
                 current = termios.tcgetattr(sys.stdin)
@@ -1587,13 +1602,12 @@ def run_interactive(
             est = ops._estimate_tokens() if hasattr(ops, '_estimate_tokens') else 0
             _safe_print(f"  Messages:  {len(ops._messages)} (~{est:,} tokens, compacted {ops._compaction_count}x)")
             _safe_print(f"  Tokens:    {ops.token_usage_str}")
-            if not _HIDE_COST:
-                _safe_print(f"  Cost:      {_cost_tracker.format_cost()}")
-                if _cost_tracker.model_usage:
-                    _safe_print(f"\n  {C_BOLD}Per model:{C_RESET}")
-                    for m, u in _cost_tracker.model_usage.items():
-                        c = f"${u['cost']:.4f}" if u['cost'] < 0.01 else f"${u['cost']:.2f}"
-                        _safe_print(f"    {m}: {u['input']:,}in/{u['output']:,}out = {c}")
+            _safe_print(f"  Cost:      {_cost_tracker.format_cost()}")
+            if _cost_tracker.model_usage:
+                _safe_print(f"\n  {C_BOLD}Per model:{C_RESET}")
+                for m, u in _cost_tracker.model_usage.items():
+                    c = f"${u['cost']:.4f}" if u['cost'] < 0.01 else f"${u['cost']:.2f}"
+                    _safe_print(f"    {m}: {u['input']:,}in/{u['output']:,}out = {c}")
             _safe_print(f"  {C_BOLD}{C_BRIGHT_CYAN}{_LINE_THIN * w}{C_RESET}\n")
             continue
 

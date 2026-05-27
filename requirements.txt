@@ -1,4 +1,4 @@
-# TokioAI dependencies
+# TokioAI CLI dependencies
 # Best: pip install -e ".[all]"
 # Or install individual providers:
 
