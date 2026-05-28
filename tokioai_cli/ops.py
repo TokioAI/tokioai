@@ -479,6 +479,9 @@ TOOLS = [
             "required": ["host", "username", "password"],
         },
     },
+    {
+        "name": "memory",
+        "description": "Persistent memory that survives across sessions. Use to remember user preferences, project context, ongoing work, learned facts. Actions: read (show all memory), write (overwrite all), append (add a note), clear (erase all).",
         "input_schema": {
             "type": "object",
             "properties": {
