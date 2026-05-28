@@ -293,8 +293,6 @@ _CLI_COMMANDS = [
     "/sitrep", "/see", "/containers", "/wifi", "/coffee", "/logs", "/ha", "/picar",
     "/gcp", "/diff", "/commit", "/branch",
     "memory", "tasks",
-    "/medlogin", "/medstatus", "/medlogout",
-    "medlogin", "medrun", "medstatus", "medlogout",
 ]
 
 # Model aliases for "model <tab>" completion
@@ -1144,9 +1142,6 @@ _SLASH_COMMANDS = {
     "/diff": _slash_diff,
     "/commit": _slash_commit,
     "/branch": _slash_branch,
-    "/medlogin": _slash_medlogin,
-    "/medstatus": _slash_medstatus,
-    "/medlogout": _slash_medlogout,
 }
 
 
