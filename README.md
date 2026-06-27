@@ -8,14 +8,14 @@ Supports **6 providers**: Claude (Vertex AI), Claude (API), OpenAI, Gemini (2.5 
 
 ### Linux / macOS / WSL
 ```bash
-git clone https://github.com/your-org/tokioai-cli.git
+git clone https://github.com/daletoniris/tokioai-cli.git
 cd tokioai-cli
 ./setup.sh
 ```
 
 ### Windows
 ```cmd
-git clone https://github.com/your-org/tokioai-cli.git
+git clone https://github.com/daletoniris/tokioai-cli.git
 cd tokioai-cli
 setup.bat
 ```
