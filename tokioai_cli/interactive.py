@@ -2043,12 +2043,30 @@ def run_setup():
             model = _input_safe(f"\n  Model [{C_GRAY}kimi{C_RESET}]: ", "kimi")
             from tokioai_cli.ops import resolve_model as _resolve
             resolved = _resolve(model)
-            env_lines += [
-                "TOKIOAI_PROVIDER=kimi",
-                f"KIMI_API_KEY={api_key}",
-                f"TOKIOAI_MODEL={model}",
-                f"KIMI_MODEL={resolved}",
-            ]
+            # Guard: models with "/" are OpenRouter format, not Kimi direct
+            if "/" in resolved:
+                _safe_print(f"\n  {C_BRIGHT_YELLOW}!{C_RESET} Model '{resolved}' is an OpenRouter model (contains '/').")
+                _safe_print(f"  {C_GRAY}Redirecting to OpenRouter setup...{C_RESET}")
+                if api_key.startswith("sk-or-"):
+                    # Key is already OpenRouter, auto-configure
+                    env_lines += [
+                        "TOKIOAI_PROVIDER=openrouter",
+                        f"OPENROUTER_API_KEY={api_key}",
+                        f"TOKIOAI_MODEL={model}",
+                        f"OPENROUTER_MODEL={resolved}",
+                    ]
+                    _safe_print(f"\n  {C_BRIGHT_GREEN}*{C_RESET} Auto-configured as OpenRouter (detected sk-or- key)")
+                else:
+                    _safe_print(f"  {C_BRIGHT_RED}!{C_RESET} Your key doesn't look like an OpenRouter key (should start with sk-or-).")
+                    _safe_print(f"  {C_GRAY}Use option 6 (OpenRouter) with your OpenRouter key, or use a Kimi-native model (kimi, moonshot).{C_RESET}")
+                    return
+            else:
+                env_lines += [
+                    "TOKIOAI_PROVIDER=kimi",
+                    f"KIMI_API_KEY={api_key}",
+                    f"TOKIOAI_MODEL={model}",
+                    f"KIMI_MODEL={resolved}",
+                ]
             _safe_print(f"\n  {C_GRAY}Key: {_mask_key(api_key)}{C_RESET}")
 
         elif choice == "6":
