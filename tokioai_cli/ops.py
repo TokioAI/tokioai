@@ -68,11 +68,14 @@ MODEL_ALIASES = {
     "mistral": "mistral:7b",
     "deepseek": "deepseek-coder-v2:16b",
     "qwen": "qwen2.5-coder:14b",
-    # ── Kimi (Moonshot AI) ──
+    # ── Kimi (Moonshot AI — direct API) ──
     "kimi": "kimi-k2-0711-preview",
     "kimi-k2": "kimi-k2-0711-preview",
     "k2": "kimi-k2-0711-preview",
     "moonshot": "moonshot-v1-auto",
+    # ── Kimi via OpenRouter (auto-resolve) ──
+    "kimi-k3": "moonshotai/kimi-k3",
+    "k3": "moonshotai/kimi-k3",
     # ── OpenRouter ──
     "or-claude": "anthropic/claude-sonnet-4",
     "or-opus": "anthropic/claude-opus-4",

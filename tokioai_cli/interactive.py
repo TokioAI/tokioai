@@ -2052,7 +2052,7 @@ def run_setup():
                     env_lines += [
                         "TOKIOAI_PROVIDER=openrouter",
                         f"OPENROUTER_API_KEY={api_key}",
-                        f"TOKIOAI_MODEL={model}",
+                        f"TOKIOAI_MODEL={resolved}",
                         f"OPENROUTER_MODEL={resolved}",
                     ]
                     _safe_print(f"\n  {C_BRIGHT_GREEN}*{C_RESET} Auto-configured as OpenRouter (detected sk-or- key)")
@@ -2077,7 +2077,7 @@ def run_setup():
                 _safe_print(f"\n  {C_BRIGHT_RED}API key is required.{C_RESET}")
                 return
             _safe_print(f"\n  {C_BOLD}Available models:{C_RESET}")
-            _safe_print(f"    {C_BRIGHT_CYAN}or-kimi3{C_RESET}    → Kimi K3             {C_GRAY}(1M ctx, $3/$15 per 1M tok){C_RESET}")
+            _safe_print(f"    {C_BRIGHT_CYAN}kimi-k3{C_RESET}     → Kimi K3             {C_GRAY}(1M ctx, $3/$15 per 1M tok){C_RESET}")
             _safe_print(f"    {C_BRIGHT_CYAN}or-gemini31{C_RESET} → Gemini 3.1 Pro       {C_GRAY}(1M ctx, $2/$12 per 1M tok){C_RESET}")
             _safe_print(f"    {C_BRIGHT_CYAN}or-gemini3{C_RESET}  → Gemini 3.6 Flash     {C_GRAY}(1M ctx, $1.5/$7.5 per 1M tok){C_RESET}")
             _safe_print(f"    {C_BRIGHT_CYAN}or-claude{C_RESET}   → Claude Sonnet 4      {C_GRAY}(1M ctx, $3/$15 per 1M tok){C_RESET}")
@@ -2087,13 +2087,13 @@ def run_setup():
             _safe_print(f"    {C_BRIGHT_CYAN}or-deepseek{C_RESET} → DeepSeek R1          {C_GRAY}(reasoning){C_RESET}")
             _safe_print(f"    {C_BRIGHT_CYAN}or-llama{C_RESET}    → Llama 3.1 405B       {C_GRAY}(open source){C_RESET}")
             model = _input_safe(f"\n  Model [{C_GRAY}or-claude{C_RESET}]: ", "or-claude")
-            # Resolve alias to full model name for OPENROUTER_MODEL
+            # Resolve alias to full model name for OpenRouter
             from tokioai_cli.ops import resolve_model as _resolve
             resolved = _resolve(model)
             env_lines += [
                 "TOKIOAI_PROVIDER=openrouter",
                 f"OPENROUTER_API_KEY={api_key}",
-                f"TOKIOAI_MODEL={model}",
+                f"TOKIOAI_MODEL={resolved}",
                 f"OPENROUTER_MODEL={resolved}",
             ]
             _safe_print(f"\n  {C_GRAY}Key: {_mask_key(api_key)}{C_RESET}")
