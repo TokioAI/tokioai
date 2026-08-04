@@ -193,13 +193,16 @@ def _drain_stdin():
 # ═══════════════════════════════════════════════════════
 
 def _load_dotenv():
+    # Priority: local .env first (isolated env), then global ~/.tokioai/.env
     env_paths = [
-        os.path.expanduser("~/.tokioai/.env"),
-        os.path.join(os.getcwd(), ".env"),
+        os.path.join(os.getcwd(), ".env"),             # Local project env (highest priority)
+        os.path.expanduser("~/.tokioai/.env"),         # Global config (fallback)
     ]
+    loaded_from = None
     for env_path in env_paths:
-        if os.path.isfile(env_path):
-            with open(env_path) as f:
+        real_path = os.path.realpath(env_path) if os.path.islink(env_path) else env_path
+        if os.path.isfile(real_path):
+            with open(real_path) as f:
                 for line in f:
                     line = line.strip()
                     if not line or line.startswith("#") or "=" not in line:
@@ -208,7 +211,10 @@ def _load_dotenv():
                     k = k.strip()
                     v = v.strip().strip('"').strip("'")
                     if k and v:
-                        os.environ[k] = v
+                        os.environ.setdefault(k, v)  # setdefault: first file wins
+            if loaded_from is None:
+                loaded_from = env_path
+    os.environ["_TOKIOAI_ENV_SOURCE"] = loaded_from or "none"
 
 _load_dotenv()
 
@@ -1875,15 +1881,32 @@ def _input_safe(prompt: str, default: str = "", secret: bool = False) -> str:
 
 
 def run_setup():
-    """Interactive setup wizard — creates ~/.tokioai/.env"""
+    """Interactive setup wizard — creates .env (local or global)"""
     w = min(_term_width() - 4, 60)
 
-    # Check if config already exists
-    env_dir = os.path.expanduser("~/.tokioai")
-    env_path = os.path.join(env_dir, ".env")
+    # Determine where to write: if NOT in main install dir, write LOCAL .env
+    global_env_dir = os.path.expanduser("~/.tokioai")
+    global_env_path = os.path.join(global_env_dir, ".env")
+
+    cwd = os.path.realpath(os.getcwd())
+    home_tokioai = os.path.realpath(os.path.expanduser("~/tokioai"))
+
+    # Isolated env: different dir AND has tokioai_cli (it's a separate clone)
+    is_isolated = (cwd != home_tokioai and
+                   os.path.exists(os.path.join(os.getcwd(), "tokioai_cli")))
+
+    if is_isolated:
+        env_dir = os.getcwd()
+        env_path = os.path.join(env_dir, ".env")
+    else:
+        env_dir = global_env_dir
+        env_path = global_env_path
+
     existing_config = {}
-    if os.path.exists(env_path):
-        with open(env_path) as f:
+    # Follow symlinks to read real file
+    real_env = os.path.realpath(env_path) if os.path.exists(env_path) else env_path
+    if os.path.exists(real_env):
+        with open(real_env) as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
@@ -2151,12 +2174,51 @@ def run_setup():
         _safe_print(f"\n\n{C_GRAY}Setup cancelled.{C_RESET}")
         return
 
-    # Write
+    # Preserve existing keys from other providers (don't destroy multi-provider setup)
+    _preserve_keys = [
+        "VERTEX_PROJECT", "ANTHROPIC_VERTEX_PROJECT_ID", "VERTEX_REGION",
+        "ANTHROPIC_VERTEX_REGION", "GOOGLE_APPLICATION_CREDENTIALS", "CLAUDE_CODE_USE_VERTEX",
+        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GEMINI_SA_PATH",
+        "GEMINI_VERTEX_PROJECT", "OPENROUTER_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY",
+        "OLLAMA_HOST",
+        "RASPI_IP", "RASPI_SSH_USER", "RASPI_TAILSCALE_IP",
+        "GCP_SSH_HOST", "GCP_SSH_USER", "ROUTER_IP",
+        "HA_URL", "HA_TOKEN", "PIDOG_URL", "PICAR_URL", "DRONE_URL",
+    ]
+    new_keys = set()
+    for line in env_lines:
+        if "=" in line and not line.startswith("#"):
+            new_keys.add(line.split("=", 1)[0].strip())
+
+    preserved = []
+    for pkey in _preserve_keys:
+        if pkey not in new_keys and pkey in existing_config:
+            preserved.append(f"{pkey}={existing_config[pkey]}")
+
+    if preserved:
+        env_lines.append("")
+        env_lines.append("# \u2500\u2500 Preserved from previous config \u2500\u2500")
+        env_lines.extend(preserved)
+
+    # Backup before overwriting
     os.makedirs(env_dir, exist_ok=True)
-    with open(env_path, "w") as f:
+    real_env_write = os.path.realpath(env_path) if os.path.exists(env_path) else env_path
+    if os.path.exists(real_env_write):
+        import shutil
+        backup_path = real_env_write + f".backup.{int(time.time())}"
+        shutil.copy2(real_env_write, backup_path)
+        _safe_print(f"\n  {C_GRAY}Backup: {backup_path}{C_RESET}")
+
+    # Write to local path for isolated, real path for global
+    write_target = env_path if is_isolated else real_env_write
+    with open(write_target, "w") as f:
         f.write("\n".join(env_lines) + "\n")
 
-    _safe_print(f"\n  {C_BRIGHT_GREEN}✓{C_RESET} Config saved to {C_BRIGHT_CYAN}{env_path}{C_RESET}")
+    if is_isolated:
+        _safe_print(f"\n  {C_BRIGHT_GREEN}✓{C_RESET} Config saved to {C_BRIGHT_CYAN}{env_path}{C_RESET} {C_GRAY}(isolated environment){C_RESET}")
+        _safe_print(f"  {C_GRAY}Global config at ~/.tokioai/.env is UNTOUCHED.{C_RESET}")
+    else:
+        _safe_print(f"\n  {C_BRIGHT_GREEN}✓{C_RESET} Config saved to {C_BRIGHT_CYAN}{env_path}{C_RESET}")
 
     # Show summary
     from tokioai_cli.ops import resolve_model
