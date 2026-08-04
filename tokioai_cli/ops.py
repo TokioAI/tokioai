@@ -171,6 +171,8 @@ def detect_model() -> str:
         or os.getenv("GEMINI_MODEL")
         or os.getenv("KIMI_MODEL")
         or os.getenv("MOONSHOT_MODEL")
+        or os.getenv("OPENROUTER_MODEL")
+        or os.getenv("OLLAMA_MODEL")
         or ""
     )
     if raw:

@@ -2041,10 +2041,13 @@ def run_setup():
             _safe_print(f"    {C_BRIGHT_CYAN}kimi{C_RESET}      → Kimi K2 0711 Preview  {C_GRAY}(latest, most capable){C_RESET}")
             _safe_print(f"    {C_BRIGHT_CYAN}moonshot{C_RESET}  → Moonshot v1 Auto       {C_GRAY}(auto-select){C_RESET}")
             model = _input_safe(f"\n  Model [{C_GRAY}kimi{C_RESET}]: ", "kimi")
+            from tokioai_cli.ops import resolve_model as _resolve
+            resolved = _resolve(model)
             env_lines += [
                 "TOKIOAI_PROVIDER=kimi",
                 f"KIMI_API_KEY={api_key}",
                 f"TOKIOAI_MODEL={model}",
+                f"KIMI_MODEL={resolved}",
             ]
             _safe_print(f"\n  {C_GRAY}Key: {_mask_key(api_key)}{C_RESET}")
 
@@ -2066,10 +2069,14 @@ def run_setup():
             _safe_print(f"    {C_BRIGHT_CYAN}or-deepseek{C_RESET} → DeepSeek R1          {C_GRAY}(reasoning){C_RESET}")
             _safe_print(f"    {C_BRIGHT_CYAN}or-llama{C_RESET}    → Llama 3.1 405B       {C_GRAY}(open source){C_RESET}")
             model = _input_safe(f"\n  Model [{C_GRAY}or-claude{C_RESET}]: ", "or-claude")
+            # Resolve alias to full model name for OPENROUTER_MODEL
+            from tokioai_cli.ops import resolve_model as _resolve
+            resolved = _resolve(model)
             env_lines += [
                 "TOKIOAI_PROVIDER=openrouter",
                 f"OPENROUTER_API_KEY={api_key}",
                 f"TOKIOAI_MODEL={model}",
+                f"OPENROUTER_MODEL={resolved}",
             ]
             _safe_print(f"\n  {C_GRAY}Key: {_mask_key(api_key)}{C_RESET}")
 
@@ -2084,10 +2091,13 @@ def run_setup():
             _safe_print(f"    {C_BRIGHT_CYAN}deepseek{C_RESET}    → DeepSeek Coder V2    {C_GRAY}(code + reasoning){C_RESET}")
             _safe_print(f"    {C_BRIGHT_CYAN}qwen{C_RESET}        → Qwen 2.5 Coder 14B  {C_GRAY}(multilingual code){C_RESET}")
             model = _input_safe(f"\n  Model [{C_GRAY}llama{C_RESET}]: ", "llama")
+            from tokioai_cli.ops import resolve_model as _resolve
+            resolved = _resolve(model)
             env_lines += [
                 "TOKIOAI_PROVIDER=ollama",
                 f"OLLAMA_HOST={host}",
                 f"TOKIOAI_MODEL={model}",
+                f"OLLAMA_MODEL={resolved}",
             ]
             _safe_print(f"\n  {C_BRIGHT_YELLOW}⚠{C_RESET}  Make sure to pull the model: {C_BRIGHT_CYAN}ollama pull {model}{C_RESET}")
 
@@ -2170,26 +2180,60 @@ def run_setup():
         _safe_print(f"\n\n{C_GRAY}Setup cancelled.{C_RESET}")
         return
 
-    # Preserve existing keys from other providers (don't destroy multi-provider setup)
-    _preserve_keys = [
-        "VERTEX_PROJECT", "ANTHROPIC_VERTEX_PROJECT_ID", "VERTEX_REGION",
-        "ANTHROPIC_VERTEX_REGION", "GOOGLE_APPLICATION_CREDENTIALS", "CLAUDE_CODE_USE_VERTEX",
-        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GEMINI_SA_PATH",
-        "GEMINI_VERTEX_PROJECT", "OPENROUTER_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY",
-        "OLLAMA_HOST",
-        "RASPI_IP", "RASPI_SSH_USER", "RASPI_TAILSCALE_IP",
-        "GCP_SSH_HOST", "GCP_SSH_USER", "ROUTER_IP",
-        "HA_URL", "HA_TOKEN", "PIDOG_URL", "PICAR_URL", "DRONE_URL",
-    ]
+    # ── Smart preservation: keep keys from OTHER providers + all non-provider keys ──
+    # Keys grouped by provider — when switching TO a provider, we DON'T re-add
+    # that provider's keys from old config (the setup just wrote fresh ones).
+    # Keys from OTHER providers are preserved so multi-provider switching works.
+    _provider_keys = {
+        "anthropic-vertex": {
+            "VERTEX_PROJECT", "ANTHROPIC_VERTEX_PROJECT_ID", "VERTEX_REGION",
+            "ANTHROPIC_VERTEX_REGION", "GOOGLE_APPLICATION_CREDENTIALS",
+            "CLAUDE_CODE_USE_VERTEX", "CLAUDE_SA_PATH", "GOOGLE_CLOUD_PROJECT",
+            "VERTEX_MODEL",
+        },
+        "anthropic": {"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"},
+        "openai": {"OPENAI_API_KEY", "OPENAI_MODEL"},
+        "gemini": {
+            "GEMINI_API_KEY", "GEMINI_SA_PATH", "GEMINI_VERTEX_PROJECT",
+            "GEMINI_VERTEX_REGION", "GEMINI_MODEL", "GOOGLE_API_KEY",
+        },
+        "kimi": {"KIMI_API_KEY", "MOONSHOT_API_KEY", "KIMI_MODEL", "MOONSHOT_MODEL"},
+        "openrouter": {"OPENROUTER_API_KEY", "OPENROUTER_MODEL"},
+        "ollama": {"OLLAMA_HOST", "OLLAMA_MODEL"},
+    }
+
+    # Determine which provider was just configured
+    chosen_provider = ""
+    for line in env_lines:
+        if line.startswith("TOKIOAI_PROVIDER="):
+            chosen_provider = line.split("=", 1)[1].strip()
+            break
+
+    # Collect keys that the setup just wrote
     new_keys = set()
     for line in env_lines:
         if "=" in line and not line.startswith("#"):
             new_keys.add(line.split("=", 1)[0].strip())
 
+    # Keys that belong to the CHOSEN provider — never preserve these (setup wrote fresh ones)
+    chosen_keys = _provider_keys.get(chosen_provider, set())
+
+    # Meta keys that setup always writes — never duplicate
+    _meta_keys = {"TOKIOAI_PROVIDER", "TOKIOAI_MODEL"}
+
     preserved = []
-    for pkey in _preserve_keys:
-        if pkey not in new_keys and pkey in existing_config:
-            preserved.append(f"{pkey}={existing_config[pkey]}")
+    for ekey, evalue in existing_config.items():
+        # Skip if already written by setup
+        if ekey in new_keys:
+            continue
+        # Skip meta keys (provider, model) — setup owns these
+        if ekey in _meta_keys:
+            continue
+        # Skip keys that belong to the chosen provider (stale from old config)
+        if ekey in chosen_keys:
+            continue
+        # Keep everything else (other provider keys, SSH hosts, custom keys)
+        preserved.append(f"{ekey}={evalue}")
 
     if preserved:
         env_lines.append("")
