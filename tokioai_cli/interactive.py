@@ -175,11 +175,13 @@ def _flush_stdin():
 
 
 def _drain_stdin():
+    """Drain any leftover bytes from stdin (non-blocking).
+    Uses a max iteration guard to prevent infinite loops on weird terminal states."""
     if _IS_WINDOWS or not sys.stdin.isatty():
         return
     try:
         fd = sys.stdin.fileno()
-        while True:
+        for _ in range(100):  # Safety limit
             rlist, _, _ = select.select([fd], [], [], 0)
             if not rlist:
                 break
@@ -1537,16 +1539,13 @@ def run_interactive(
     _safe_print()
 
     while True:
-        # Restore terminal to clean state before every prompt (only if needed)
+        # Restore terminal to clean state before every prompt
         if _terminal_saved_state and not _IS_WINDOWS:
             try:
-                current = termios.tcgetattr(sys.stdin)
-                if current != _terminal_saved_state:
-                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, _terminal_saved_state)
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, _terminal_saved_state)
             except Exception:
                 pass
         _flush_stdin()
-        _drain_stdin()
 
         try:
             prompt = f"\n{RL_START}{C_BOLD}{C_BRIGHT_CYAN}{RL_END}{_PROMPT_CHAR}{RL_START}{C_RESET}{RL_END} "
@@ -1805,13 +1804,10 @@ def run_interactive(
                 # Restore terminal before waiting for input
                 if _terminal_saved_state and not _IS_WINDOWS:
                     try:
-                        current = termios.tcgetattr(sys.stdin)
-                        if current != _terminal_saved_state:
-                            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, _terminal_saved_state)
+                        termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, _terminal_saved_state)
                     except Exception:
                         pass
                 _flush_stdin()
-                _drain_stdin()
 
                 # Wait for next instruction — blocking prompt (user controls the pace)
                 try:
