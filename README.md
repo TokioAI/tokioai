@@ -2,7 +2,7 @@
 
 **Autonomous AI Agent for the terminal.** Cybersecurity, DevOps, Engineering, Hacking, Robotics.
 
-Supports **6 providers**: Claude (Vertex AI), Claude (API), OpenAI, Gemini (2.5 + 3.x), OpenRouter, Ollama.
+Supports **7 providers**: Claude (Vertex AI), Claude (API), OpenAI, Gemini (2.5 + 3.x), Kimi K2 (Moonshot AI), OpenRouter, Ollama.
 
 ## Quick Install
 
@@ -43,9 +43,10 @@ Choose your AI provider:
   2) Claude via API key    (console.anthropic.com)
   3) OpenAI GPT            (platform.openai.com)
   4) Google Gemini          (aistudio.google.com — free tier!)
-  5) OpenRouter             (openrouter.ai — 200+ models)
-  6) Ollama (local)         (free, runs on your machine)
-  7) Multi-provider         (configure multiple, switch at runtime)
+  5) Kimi K2                 (platform.moonshot.cn — latest Chinese model)
+  6) OpenRouter             (openrouter.ai — 200+ models)
+  7) Ollama (local)         (free, runs on your machine)
+  8) Multi-provider         (configure multiple, switch at runtime)
 
   Select [1-7]: 4
   Gemini API key (AIza...): AIzaSy...
@@ -82,6 +83,7 @@ Inside the CLI, type `model <name>` to switch:
 🌀 tokio> model gemini31   → Gemini 3.1 Pro Preview (latest Google)
 🌀 tokio> model flash      → Gemini 2.5 Flash (fast + cheap)
 🌀 tokio> model gpt4o      → GPT-4o
+🌀 tokio> model kimi       → Kimi K2 (Moonshot AI, latest)
 🌀 tokio> model llama      → Llama 3.1 via Ollama (local)
 🌀 tokio> models           → list all available models
 ```
@@ -103,6 +105,8 @@ Credentials switch automatically — Claude uses Vertex SA, Gemini 3.x uses API 
 | `o3` | o3 | OpenAI |
 | `llama` | llama3.1:8b | Ollama (local) |
 | `deepseek` | deepseek-coder-v2:16b | Ollama (local) |
+| `kimi` | kimi-k2-0711-preview | Kimi (Moonshot AI) |
+| `k2` | kimi-k2-0711-preview | Kimi (Moonshot AI) |
 | `or-claude` | anthropic/claude-sonnet-4 | OpenRouter |
 
 ## Slash Commands

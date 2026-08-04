@@ -299,7 +299,10 @@ _CLI_COMMANDS = [
 _MODEL_ALIASES_SHORT = [
     "opus", "sonnet", "haiku", "flash", "flash2", "flash3",
     "gpt4o", "gpt5", "o3", "o4-mini",
-    "gemini3", "gemini3.1",
+    "gemini3", "gemini31",
+    "kimi", "kimi-k2", "k2", "moonshot",
+    "or-kimi3", "or-k3", "or-kimi", "or-claude", "or-opus",
+    "or-gemini3", "or-gemini31", "or-gpt", "or-deepseek", "or-llama",
 ]
 
 def _completer(text: str, state: int):
@@ -400,6 +403,15 @@ class CostTracker:
         "gemini-2.5": {"input": 0.15, "output": 0.60},
         "gemini-3": {"input": 0.15, "output": 0.60},
         "gemini-3.1": {"input": 0.15, "output": 0.60},
+        # OpenRouter models
+        "kimi-k3": {"input": 3.0, "output": 15.0},
+        "kimi-k2": {"input": 0.57, "output": 2.30},
+        "moonshotai/kimi-k3": {"input": 3.0, "output": 15.0},
+        "moonshotai/kimi-k2": {"input": 0.57, "output": 2.30},
+        "anthropic/claude-sonnet-4": {"input": 3.0, "output": 15.0},
+        "anthropic/claude-opus-4": {"input": 15.0, "output": 75.0},
+        "google/gemini-3.1-pro": {"input": 2.0, "output": 12.0},
+        "google/gemini-3.6-flash": {"input": 1.5, "output": 7.5},
     }
 
     def __init__(self):
@@ -1278,6 +1290,25 @@ def _show_config():
     _safe_print(f"  Model:     {C_BOLD}{MODEL}{C_RESET}")
     if VERTEX_PROJECT:
         _safe_print(f"  GCP:       {VERTEX_PROJECT} ({VERTEX_REGION})")
+    # Show API keys (masked)
+    _safe_print(f"\n  {C_BOLD}API Keys:{C_RESET}")
+    _key_names = [
+        ("Anthropic", "ANTHROPIC_API_KEY"),
+        ("OpenAI", "OPENAI_API_KEY"),
+        ("Gemini", "GEMINI_API_KEY"),
+        ("Google", "GOOGLE_API_KEY"),
+        ("Kimi", "KIMI_API_KEY"),
+        ("Moonshot", "MOONSHOT_API_KEY"),
+        ("OpenRouter", "OPENROUTER_API_KEY"),
+    ]
+    _any_key = False
+    for label, env_name in _key_names:
+        val = os.getenv(env_name, "")
+        if val:
+            _safe_print(f"  {label:12s} {C_GREEN}{_mask_key(val)}{C_RESET}")
+            _any_key = True
+    if not _any_key:
+        _safe_print(f"  {C_GRAY}(none configured — using Vertex SA or run --setup){C_RESET}")
     _safe_print(f"\n  {C_BOLD}Hosts:{C_RESET}")
     _safe_print(f"  Raspi:     {RASPI_IP or '(not set)'} / {RASPI_TS or '(not set)'}")
     _safe_print(f"  GCP:       {GCP_IP or '(not set)'}")
@@ -1619,7 +1650,18 @@ def run_interactive(
             new_provider = current_provider
             need_new_client = False
 
-            if "gemini" in new_model and (current_provider not in ("gemini", "google", "gemini-vertex")
+            # OpenRouter models contain "/" (e.g., moonshotai/kimi-k3, anthropic/claude-sonnet-4)
+            if "/" in new_model and current_provider != "openrouter":
+                or_key = os.getenv("OPENROUTER_API_KEY")
+                if or_key:
+                    new_provider = "openrouter"
+                    need_new_client = True
+                else:
+                    _safe_print(f"  {C_BRIGHT_YELLOW}⚠{C_RESET}  OpenRouter models require OPENROUTER_API_KEY. Run: tokioai --setup")
+                    continue
+            elif "/" in new_model:
+                pass  # already on openrouter, just switch model
+            elif "gemini" in new_model and (current_provider not in ("gemini", "google", "gemini-vertex")
                                          or (any(x in new_model for x in ("gemini-3", "gemini-3.")) and current_provider == "gemini-vertex")
                                          or (not any(x in new_model for x in ("gemini-3", "gemini-3.")) and current_provider == "gemini")):
                 # Gemini 3.x MUST use API key (not Vertex AI — gives 404)
@@ -1649,6 +1691,14 @@ def run_interactive(
                     need_new_client = True
                 elif not os.getenv("OPENAI_API_KEY"):
                     _safe_print(f"  {C_BRIGHT_YELLOW}⚠{C_RESET}  OpenAI requires OPENAI_API_KEY. Run: tokioai --setup")
+                    continue
+            elif ("kimi" in new_model or "moonshot" in new_model) and current_provider not in ("kimi", "moonshot"):
+                kimi_key = os.getenv("KIMI_API_KEY") or os.getenv("MOONSHOT_API_KEY")
+                if kimi_key:
+                    new_provider = "kimi"
+                    need_new_client = True
+                else:
+                    _safe_print(f"  {C_BRIGHT_YELLOW}⚠{C_RESET}  Kimi K2 requires KIMI_API_KEY. Get it at: https://platform.moonshot.cn/")
                     continue
             elif "claude" in new_model and current_provider not in ("anthropic", "anthropic-vertex", "vertex"):
                 if VERTEX_PROJECT:
@@ -1811,10 +1861,14 @@ def _mask_key(key: str) -> str:
     return f"{key[:8]}...{key[-4:]}"
 
 
-def _input_safe(prompt: str, default: str = "") -> str:
-    """Input with Ctrl+C handling."""
+def _input_safe(prompt: str, default: str = "", secret: bool = False) -> str:
+    """Input with Ctrl+C handling. If secret=True, hides input like a password."""
     try:
-        val = input(prompt).strip()
+        if secret:
+            import getpass
+            val = getpass.getpass(prompt).strip()
+        else:
+            val = input(prompt).strip()
         return val if val else default
     except (EOFError, KeyboardInterrupt):
         raise KeyboardInterrupt
@@ -1854,13 +1908,14 @@ def run_setup():
   {C_BRIGHT_CYAN}2{C_RESET}) Claude via API key    {C_GRAY}(console.anthropic.com){C_RESET}
   {C_BRIGHT_CYAN}3{C_RESET}) OpenAI GPT            {C_GRAY}(platform.openai.com){C_RESET}
   {C_BRIGHT_CYAN}4{C_RESET}) Google Gemini          {C_GRAY}(aistudio.google.com — free tier! Gemini 2.5/3.x){C_RESET}
-  {C_BRIGHT_CYAN}5{C_RESET}) OpenRouter             {C_GRAY}(openrouter.ai — 200+ models){C_RESET}
-  {C_BRIGHT_CYAN}6{C_RESET}) Ollama (local)         {C_GRAY}(free, runs on your machine){C_RESET}
-  {C_BRIGHT_CYAN}7{C_RESET}) Multi-provider         {C_GRAY}(configure multiple providers — switch with 'model' command){C_RESET}
+  {C_BRIGHT_CYAN}5{C_RESET}) Kimi K2 (Moonshot AI)  {C_GRAY}(platform.moonshot.cn — latest Chinese model){C_RESET}
+  {C_BRIGHT_CYAN}6{C_RESET}) OpenRouter             {C_GRAY}(openrouter.ai — 200+ models){C_RESET}
+  {C_BRIGHT_CYAN}7{C_RESET}) Ollama (local)         {C_GRAY}(free, runs on your machine){C_RESET}
+  {C_BRIGHT_CYAN}8{C_RESET}) Multi-provider         {C_GRAY}(configure multiple providers — switch with 'model' command){C_RESET}
 """)
 
     try:
-        choice = _input_safe(f"  {C_BOLD}Select [1-7]:{C_RESET} ")
+        choice = _input_safe(f"  {C_BOLD}Select [1-8]:{C_RESET} ")
     except KeyboardInterrupt:
         _safe_print(f"\n{C_GRAY}Cancelled.{C_RESET}")
         return
@@ -1901,7 +1956,7 @@ def run_setup():
         elif choice == "2":
             _safe_print(f"\n  {C_BOLD}Claude via API key{C_RESET}")
             _safe_print(f"  {C_GRAY}Get your key at: https://console.anthropic.com/settings/keys{C_RESET}\n")
-            api_key = _input_safe(f"  Anthropic API key (sk-ant-...): ")
+            api_key = _input_safe(f"  Anthropic API key (sk-ant-...): ", secret=True)
             if not api_key:
                 _safe_print(f"\n  {C_BRIGHT_RED}API key is required.{C_RESET}")
                 return
@@ -1920,7 +1975,7 @@ def run_setup():
         elif choice == "3":
             _safe_print(f"\n  {C_BOLD}OpenAI GPT{C_RESET}")
             _safe_print(f"  {C_GRAY}Get your key at: https://platform.openai.com/api-keys{C_RESET}\n")
-            api_key = _input_safe(f"  OpenAI API key (sk-...): ")
+            api_key = _input_safe(f"  OpenAI API key (sk-...): ", secret=True)
             if not api_key:
                 _safe_print(f"\n  {C_BRIGHT_RED}API key is required.{C_RESET}")
                 return
@@ -1939,7 +1994,7 @@ def run_setup():
         elif choice == "4":
             _safe_print(f"\n  {C_BOLD}Google Gemini{C_RESET}")
             _safe_print(f"  {C_GRAY}Get your FREE key at: https://aistudio.google.com/apikey{C_RESET}\n")
-            api_key = _input_safe(f"  Gemini API key (AIza...): ")
+            api_key = _input_safe(f"  Gemini API key (AIza...): ", secret=True)
             if not api_key:
                 _safe_print(f"\n  {C_BRIGHT_RED}API key is required.{C_RESET}")
                 return
@@ -1957,18 +2012,40 @@ def run_setup():
             _safe_print(f"\n  {C_GRAY}Key: {_mask_key(api_key)}{C_RESET}")
 
         elif choice == "5":
-            _safe_print(f"\n  {C_BOLD}OpenRouter{C_RESET}")
-            _safe_print(f"  {C_GRAY}Get your key at: https://openrouter.ai/keys{C_RESET}\n")
-            api_key = _input_safe(f"  OpenRouter API key (sk-or-...): ")
+            _safe_print(f"\n  {C_BOLD}Kimi K2 (Moonshot AI){C_RESET}")
+            _safe_print(f"  {C_GRAY}Get your key at: https://platform.moonshot.cn/{C_RESET}\n")
+            api_key = _input_safe(f"  Kimi API key (sk-...): ", secret=True)
             if not api_key:
                 _safe_print(f"\n  {C_BRIGHT_RED}API key is required.{C_RESET}")
                 return
             _safe_print(f"\n  {C_BOLD}Available models:{C_RESET}")
-            _safe_print(f"    {C_BRIGHT_CYAN}or-claude{C_RESET}    → Claude Sonnet 4")
-            _safe_print(f"    {C_BRIGHT_CYAN}or-gpt{C_RESET}      → GPT-4o")
-            _safe_print(f"    {C_BRIGHT_CYAN}or-gemini{C_RESET}   → Gemini 2.5 Flash")
-            _safe_print(f"    {C_BRIGHT_CYAN}or-llama{C_RESET}    → Llama 3.1 405B")
-            _safe_print(f"    {C_BRIGHT_CYAN}or-deepseek{C_RESET} → DeepSeek R1")
+            _safe_print(f"    {C_BRIGHT_CYAN}kimi{C_RESET}      → Kimi K2 0711 Preview  {C_GRAY}(latest, most capable){C_RESET}")
+            _safe_print(f"    {C_BRIGHT_CYAN}moonshot{C_RESET}  → Moonshot v1 Auto       {C_GRAY}(auto-select){C_RESET}")
+            model = _input_safe(f"\n  Model [{C_GRAY}kimi{C_RESET}]: ", "kimi")
+            env_lines += [
+                "TOKIOAI_PROVIDER=kimi",
+                f"KIMI_API_KEY={api_key}",
+                f"TOKIOAI_MODEL={model}",
+            ]
+            _safe_print(f"\n  {C_GRAY}Key: {_mask_key(api_key)}{C_RESET}")
+
+        elif choice == "6":
+            _safe_print(f"\n  {C_BOLD}OpenRouter{C_RESET}")
+            _safe_print(f"  {C_GRAY}Get your key at: https://openrouter.ai/keys{C_RESET}\n")
+            api_key = _input_safe(f"  OpenRouter API key (sk-or-...): ", secret=True)
+            if not api_key:
+                _safe_print(f"\n  {C_BRIGHT_RED}API key is required.{C_RESET}")
+                return
+            _safe_print(f"\n  {C_BOLD}Available models:{C_RESET}")
+            _safe_print(f"    {C_BRIGHT_CYAN}or-kimi3{C_RESET}    → Kimi K3             {C_GRAY}(1M ctx, $3/$15 per 1M tok){C_RESET}")
+            _safe_print(f"    {C_BRIGHT_CYAN}or-gemini31{C_RESET} → Gemini 3.1 Pro       {C_GRAY}(1M ctx, $2/$12 per 1M tok){C_RESET}")
+            _safe_print(f"    {C_BRIGHT_CYAN}or-gemini3{C_RESET}  → Gemini 3.6 Flash     {C_GRAY}(1M ctx, $1.5/$7.5 per 1M tok){C_RESET}")
+            _safe_print(f"    {C_BRIGHT_CYAN}or-claude{C_RESET}   → Claude Sonnet 4      {C_GRAY}(1M ctx, $3/$15 per 1M tok){C_RESET}")
+            _safe_print(f"    {C_BRIGHT_CYAN}or-opus{C_RESET}     → Claude Opus 4        {C_GRAY}(200K ctx, $15/$75 per 1M tok){C_RESET}")
+            _safe_print(f"    {C_BRIGHT_CYAN}or-gpt{C_RESET}      → GPT-4.1              {C_GRAY}(1M ctx, $2/$8 per 1M tok){C_RESET}")
+            _safe_print(f"    {C_BRIGHT_CYAN}or-kimi{C_RESET}     → Kimi K2              {C_GRAY}(131K ctx, $0.57/$2.3 per 1M tok){C_RESET}")
+            _safe_print(f"    {C_BRIGHT_CYAN}or-deepseek{C_RESET} → DeepSeek R1          {C_GRAY}(reasoning){C_RESET}")
+            _safe_print(f"    {C_BRIGHT_CYAN}or-llama{C_RESET}    → Llama 3.1 405B       {C_GRAY}(open source){C_RESET}")
             model = _input_safe(f"\n  Model [{C_GRAY}or-claude{C_RESET}]: ", "or-claude")
             env_lines += [
                 "TOKIOAI_PROVIDER=openrouter",
@@ -1977,7 +2054,7 @@ def run_setup():
             ]
             _safe_print(f"\n  {C_GRAY}Key: {_mask_key(api_key)}{C_RESET}")
 
-        elif choice == "6":
+        elif choice == "7":
             _safe_print(f"\n  {C_BOLD}Ollama (local){C_RESET}")
             _safe_print(f"  {C_GRAY}Install Ollama: https://ollama.com/download{C_RESET}\n")
             host = _input_safe(f"  Ollama URL [{C_GRAY}http://localhost:11434{C_RESET}]: ", "http://localhost:11434")
@@ -1995,7 +2072,7 @@ def run_setup():
             ]
             _safe_print(f"\n  {C_BRIGHT_YELLOW}⚠{C_RESET}  Make sure to pull the model: {C_BRIGHT_CYAN}ollama pull {model}{C_RESET}")
 
-        elif choice == "7":
+        elif choice == "8":
             _safe_print(f"\n  {C_BOLD}Multi-provider setup{C_RESET}")
             _safe_print(f"  {C_GRAY}Configure multiple providers, switch with 'model' command at runtime.{C_RESET}\n")
 
@@ -2023,7 +2100,7 @@ def run_setup():
 
             # Gemini
             _safe_print(f"\n  {C_BOLD}Google Gemini {C_GRAY}(Enter to skip){C_RESET}")
-            gem_key = _input_safe(f"  Gemini API key (AIza...): ")
+            gem_key = _input_safe(f"  Gemini API key (AIza...): ", secret=True)
             if gem_key:
                 env_lines.append(f"GEMINI_API_KEY={gem_key}")
 
@@ -2035,7 +2112,7 @@ def run_setup():
 
             # OpenAI
             _safe_print(f"\n  {C_BOLD}OpenAI {C_GRAY}(Enter to skip){C_RESET}")
-            oai_key = _input_safe(f"  OpenAI API key (sk-...): ")
+            oai_key = _input_safe(f"  OpenAI API key (sk-...): ", secret=True)
             if oai_key:
                 env_lines.append(f"OPENAI_API_KEY={oai_key}")
 

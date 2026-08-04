@@ -20,6 +20,9 @@ build/
 
 # Config (user-specific, created by --setup)
 # ~/.tokioai/.env is the config file — NOT in the repo
+.env
+.env.*
+!.env.example
 
 # OS
 .DS_Store

@@ -68,12 +68,23 @@ MODEL_ALIASES = {
     "mistral": "mistral:7b",
     "deepseek": "deepseek-coder-v2:16b",
     "qwen": "qwen2.5-coder:14b",
+    # ── Kimi (Moonshot AI) ──
+    "kimi": "kimi-k2-0711-preview",
+    "kimi-k2": "kimi-k2-0711-preview",
+    "k2": "kimi-k2-0711-preview",
+    "moonshot": "moonshot-v1-auto",
     # ── OpenRouter ──
     "or-claude": "anthropic/claude-sonnet-4",
+    "or-opus": "anthropic/claude-opus-4",
     "or-gpt": "openai/gpt-4o",
-    "or-gemini": "google/gemini-2.5-flash-preview",
+    "or-gemini": "google/gemini-2.5-flash",
+    "or-gemini3": "google/gemini-3.6-flash",
+    "or-gemini31": "google/gemini-3.1-pro-preview",
     "or-llama": "meta-llama/llama-3.1-405b-instruct",
     "or-deepseek": "deepseek/deepseek-r1",
+    "or-kimi": "moonshotai/kimi-k2",
+    "or-kimi3": "moonshotai/kimi-k3",
+    "or-k3": "moonshotai/kimi-k3",
 }
 
 
@@ -86,7 +97,7 @@ def list_aliases() -> dict[str, list[str]]:
     """Group aliases by provider for display."""
     groups = {
         "Claude": [], "OpenAI": [], "Gemini": [],
-        "Ollama": [], "OpenRouter": [],
+        "Kimi": [], "Ollama": [], "OpenRouter": [],
     }
     seen = set()
     for alias, model in MODEL_ALIASES.items():
@@ -99,6 +110,8 @@ def list_aliases() -> dict[str, list[str]]:
             groups["OpenAI"].append((alias, model))
         elif "gemini" in model:
             groups["Gemini"].append((alias, model))
+        elif "kimi" in model or "moonshot" in model:
+            groups["Kimi"].append((alias, model))
         elif ":" in model:
             groups["Ollama"].append((alias, model))
         elif "/" in model:
@@ -132,6 +145,10 @@ def detect_provider() -> str:
     if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
         return "gemini"
 
+    # Kimi / Moonshot AI
+    if os.getenv("KIMI_API_KEY") or os.getenv("MOONSHOT_API_KEY"):
+        return "kimi"
+
     # OpenRouter
     if os.getenv("OPENROUTER_API_KEY"):
         return "openrouter"
@@ -152,6 +169,8 @@ def detect_model() -> str:
         or os.getenv("CLAUDE_MODEL")
         or os.getenv("OPENAI_MODEL")
         or os.getenv("GEMINI_MODEL")
+        or os.getenv("KIMI_MODEL")
+        or os.getenv("MOONSHOT_MODEL")
         or ""
     )
     if raw:
@@ -165,6 +184,7 @@ def detect_model() -> str:
         "openai": "gpt-4o",
         "gemini": "gemini-2.5-flash",
         "gemini-vertex": "gemini-3.1-pro-preview",
+        "kimi": "kimi-k2-0711-preview",
         "openrouter": "anthropic/claude-opus-4",
         "ollama": os.getenv("OLLAMA_MODEL", "qwen2.5:32b"),
     }
@@ -968,6 +988,24 @@ def init_client(provider: str):
             print("\033[31mERROR: google-genai not installed. Run: pip install google-genai\033[0m")
             sys.exit(1)
 
+    elif provider in ("kimi", "moonshot"):
+        api_key = os.getenv("KIMI_API_KEY") or os.getenv("MOONSHOT_API_KEY", "")
+        base_url = os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
+        if not api_key:
+            print("\033[31mERROR: KIMI_API_KEY not set\033[0m")
+            print("Get your key at: https://platform.moonshot.cn/")
+            sys.exit(1)
+        try:
+            from openai import OpenAI
+            client = OpenAI(
+                base_url=base_url,
+                api_key=api_key,
+            )
+            return client, "openai"  # Kimi K2 uses OpenAI-compatible API
+        except ImportError:
+            print("\033[31mERROR: openai not installed. Run: pip install openai\033[0m")
+            sys.exit(1)
+
     elif provider == "openrouter":
         api_key = os.getenv("OPENROUTER_API_KEY", "")
         if not api_key:
@@ -1000,7 +1038,7 @@ def init_client(provider: str):
 
     else:
         print(f"\033[31mERROR: Unknown provider '{provider}'\033[0m")
-        print("Available: anthropic-vertex, anthropic, openai, gemini, openrouter, ollama")
+        print("Available: anthropic-vertex, anthropic, openai, gemini, kimi, openrouter, ollama")
         sys.exit(1)
 
 
@@ -1072,6 +1110,7 @@ class TokioOps:
                 "openai": "gpt-4o",
                 "gemini": "gemini-2.5-flash",
                 "gemini-vertex": "gemini-3.1-pro-preview",
+                "kimi": "kimi-k2-0711-preview",
                 "openrouter": "anthropic/claude-opus-4",
                 "ollama": os.getenv("OLLAMA_MODEL", "qwen2.5:32b"),
                 "local": os.getenv("OLLAMA_MODEL", "qwen2.5:32b"),
