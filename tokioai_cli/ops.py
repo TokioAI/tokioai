@@ -1104,6 +1104,7 @@ _RETRYABLE_ERRORS = (
     "server_error", "internal_error", "temporarily unavailable",
     "capacity", "too many requests", "service unavailable",
     "connection", "timeout", "timed out",
+    "invalid_grant", "invalid jwt",  # transient GCP auth errors
 )
 
 def _should_retry(error_str: str) -> bool:
@@ -1563,6 +1564,12 @@ class TokioOps:
                         delay = _backoff_delay(attempt)
                         if on_text:
                             on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES})]\n")
+                        # Refresh credentials on auth errors
+                        if "invalid_grant" in err_str.lower() or "invalid jwt" in err_str.lower():
+                            try:
+                                self._client, _ = init_client(PROVIDER)
+                            except Exception:
+                                pass
                         time.sleep(delay)
                         continue
                     return f"API Error: {e}"
@@ -1707,6 +1714,12 @@ class TokioOps:
                         delay = _backoff_delay(attempt)
                         if on_text:
                             on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES})]\n")
+                        # Refresh credentials on auth errors
+                        if "invalid_grant" in err_str.lower() or "invalid jwt" in err_str.lower():
+                            try:
+                                self._client, _ = init_client(PROVIDER)
+                            except Exception:
+                                pass
                         time.sleep(delay)
                         continue
                     return f"API Error: {e}"
