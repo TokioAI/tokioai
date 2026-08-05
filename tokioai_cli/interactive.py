@@ -390,6 +390,16 @@ def _load_session():
                 saved = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
                 if datetime.now() - saved > timedelta(days=7):
                     return None
+            # Validate message structure -- drop corrupted sessions
+            msgs = state.get("messages", [])
+            if msgs:
+                # Remove trailing user messages without assistant responses
+                while len(msgs) > 1 and msgs[-1].get("role") == "user" and msgs[-2].get("role") == "user":
+                    msgs.pop()
+                # If only user messages remain, start fresh
+                if all(m.get("role") == "user" for m in msgs):
+                    return None
+                state["messages"] = msgs
             return state
     except Exception:
         pass

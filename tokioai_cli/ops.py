@@ -1559,7 +1559,7 @@ class TokioOps:
                     if _should_retry(err_str) and attempt < MAX_API_RETRIES:
                         delay = _backoff_delay(attempt)
                         if on_text:
-                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES})]\n")
+                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES}) -- {type(e).__name__}: {err_str[:100]}]\n")
                         # Refresh credentials on auth errors
                         if "invalid_grant" in err_str.lower() or "invalid jwt" in err_str.lower():
                             try:
@@ -1712,7 +1712,7 @@ class TokioOps:
                     if _should_retry(err_str) and attempt < MAX_API_RETRIES:
                         delay = _backoff_delay(attempt)
                         if on_text:
-                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES})]\n")
+                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES}) -- {type(e).__name__}: {err_str[:100]}]\n")
                         # Refresh credentials on auth errors
                         if "invalid_grant" in err_str.lower() or "invalid jwt" in err_str.lower():
                             try:
@@ -1903,7 +1903,7 @@ class TokioOps:
                     if _should_retry(err_str) and attempt < MAX_API_RETRIES:
                         delay = _backoff_delay(attempt)
                         if on_text:
-                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES})]\n")
+                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES}) -- {type(e).__name__}: {err_str[:100]}]\n")
                         time.sleep(delay)
                         continue
                     return f"API Error: {e}"
@@ -2049,7 +2049,7 @@ class TokioOps:
                     if _should_retry(err_str) and attempt < MAX_API_RETRIES:
                         delay = _backoff_delay(attempt)
                         if on_text:
-                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES})]\n")
+                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES}) -- {type(e).__name__}: {err_str[:100]}]\n")
                         time.sleep(delay)
                         continue
                     return f"API Error: {e}"
