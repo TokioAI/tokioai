@@ -130,26 +130,22 @@ def detect_provider() -> str:
     """Auto-detect the best available provider from env vars."""
     explicit = os.getenv("TOKIOAI_PROVIDER", "").lower().strip()
     if explicit:
-        # Cross-check: model with "/" means OpenRouter, not kimi/gemini/etc.
-        # This catches misconfigured setups (e.g., kimi provider + moonshotai/kimi-k3 model)
-        if explicit != "openrouter":
-            # Check ALL model vars + resolve aliases (or-kimi3 -> moonshotai/kimi-k3)
-            model_vars = [os.getenv(v, "") for v in (
-                "TOKIOAI_MODEL", "KIMI_MODEL", "OPENROUTER_MODEL", "MOONSHOT_MODEL")]
-            # Also resolve the primary model in case it's an alias like "or-kimi3"
+        # Trust explicit provider for well-defined providers (vertex, anthropic, openai)
+        # Only cross-check for ambiguous providers (kimi, gemini) that might actually
+        # be OpenRouter models in disguise (e.g., kimi provider + moonshotai/kimi-k3 model)
+        _trusted_providers = {"anthropic-vertex", "claude-vertex", "vertex",
+                              "anthropic", "openai", "openrouter", "ollama"}
+        if explicit not in _trusted_providers:
+            # Check if the TOKIOAI_MODEL has org/name format = OpenRouter model
             primary = os.getenv("TOKIOAI_MODEL", "")
-            if primary:
-                model_vars.append(resolve_model(primary))
-            model_hint = next((m for m in model_vars if "/" in m), "")
-            if model_hint and not model_hint.startswith("models/"):
-                # Model has org/name format = OpenRouter model
+            resolved = resolve_model(primary) if primary else ""
+            model_hint = resolved if "/" in resolved and not resolved.startswith("models/") else ""
+            if model_hint:
                 or_key = os.getenv("OPENROUTER_API_KEY")
                 if or_key:
                     return "openrouter"
-                # Even without OR key, check if the key stored under the wrong provider
-                # is actually an OpenRouter key (sk-or- prefix)
-                for kvar in ("KIMI_API_KEY", "MOONSHOT_API_KEY", "OPENAI_API_KEY",
-                             "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
+                # Check if a key from another provider is actually an OpenRouter key
+                for kvar in ("KIMI_API_KEY", "MOONSHOT_API_KEY"):
                     k = os.getenv(kvar, "")
                     if k.startswith("sk-or-"):
                         os.environ["OPENROUTER_API_KEY"] = k
