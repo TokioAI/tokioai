@@ -1563,11 +1563,14 @@ class TokioOps:
                         # Refresh credentials on auth errors
                         if "invalid_grant" in err_str.lower() or "invalid jwt" in err_str.lower():
                             try:
-                                self._client, _ = init_client(PROVIDER)
+                                self._client, _ = init_client(self._provider_name)
                             except Exception:
                                 pass
                         time.sleep(delay)
                         continue
+                    # Non-retryable: show the actual error for debugging
+                    if on_text:
+                        on_text(f"\n[API Error ({type(e).__name__}): {err_str[:200]}]\n")
                     return f"API Error: {e}"
             if response is None:
                 continue  # context was compacted, retry
@@ -1713,11 +1716,14 @@ class TokioOps:
                         # Refresh credentials on auth errors
                         if "invalid_grant" in err_str.lower() or "invalid jwt" in err_str.lower():
                             try:
-                                self._client, _ = init_client(PROVIDER)
+                                self._client, _ = init_client(self._provider_name)
                             except Exception:
                                 pass
                         time.sleep(delay)
                         continue
+                    # Non-retryable: show the actual error for debugging
+                    if on_text:
+                        on_text(f"\n[API Error ({type(e).__name__}): {err_str[:200]}]\n")
                     return f"API Error: {e}"
             if stream_obj is None:
                 continue

@@ -27,3 +27,4 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+tokioai_cli/ops.py.bak.openrouter
