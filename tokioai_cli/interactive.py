@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TokioAI v5.0
+TokioAI v5.2
 """
 from __future__ import annotations
 
@@ -296,7 +296,7 @@ COST_FILE = os.path.expanduser("~/.tokioai_costs.json")
 
 _CLI_COMMANDS = [
     "exit", "quit", "help", "reset", "compact", "stats", "model", "models", "clear",
-    "unlimited", "persistent", "stop", "config",
+    "unlimited", "persistent", "stop", "config", "dual", "router", "threshold", "force",
     "/status", "/waf", "/health", "/drone", "/threats", "/entity",
     "/sitrep", "/see", "/containers", "/wifi", "/coffee", "/logs", "/ha", "/picar",
     "/gcp", "/diff", "/commit", "/branch",
@@ -309,7 +309,8 @@ _MODEL_ALIASES_SHORT = [
     "gpt4o", "gpt5", "o3", "o4-mini",
     "gemini3", "gemini31",
     "kimi", "kimi-k2", "k2", "moonshot",
-    "or-kimi3", "or-k3", "or-kimi", "or-claude", "or-opus",
+    "or-kimi3", "or-k3", "or-kimi", "or-k27", "or-claude", "or-opus",
+    "dual", "kimi-dual", "k2k3", "kimi-k2.7", "k27",
     "or-gemini3", "or-gemini31", "or-gpt", "or-deepseek", "or-llama",
 ]
 
@@ -390,16 +391,6 @@ def _load_session():
                 saved = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
                 if datetime.now() - saved > timedelta(days=7):
                     return None
-            # Validate message structure -- drop corrupted sessions
-            msgs = state.get("messages", [])
-            if msgs:
-                # Remove trailing user messages without assistant responses
-                while len(msgs) > 1 and msgs[-1].get("role") == "user" and msgs[-2].get("role") == "user":
-                    msgs.pop()
-                # If only user messages remain, start fresh
-                if all(m.get("role") == "user" for m in msgs):
-                    return None
-                state["messages"] = msgs
             return state
     except Exception:
         pass
@@ -426,6 +417,8 @@ class CostTracker:
         "kimi-k2": {"input": 0.57, "output": 2.30},
         "moonshotai/kimi-k3": {"input": 3.0, "output": 15.0},
         "moonshotai/kimi-k2": {"input": 0.57, "output": 2.30},
+        "kimi-k2.7-code": {"input": 0.71, "output": 3.50},
+        "moonshotai/kimi-k2.7-code": {"input": 0.71, "output": 3.50},
         "anthropic/claude-sonnet-4": {"input": 3.0, "output": 15.0},
         "anthropic/claude-opus-4": {"input": 15.0, "output": 75.0},
         "google/gemini-3.1-pro": {"input": 2.0, "output": 12.0},
@@ -1198,8 +1191,14 @@ def show_banner(model: str, provider: str, mode_parts: list[str] | None = None):
 
     mode_str = " + ".join(mode_parts) if mode_parts else "Interactive"
 
-    _safe_print(f"    {C_BOLD}{C_BRIGHT_WHITE}  TokioAI{C_RESET} {C_GRAY}v5.0{C_RESET}")
-    _safe_print(f"    {C_GRAY}  {model} via {provider} • {mode_str}{C_RESET}")
+    _safe_print(f"    {C_BOLD}{C_BRIGHT_WHITE}  TokioAI{C_RESET} {C_GRAY}v5.2{C_RESET}")
+    if model.startswith("dual:"):
+        parts = model[5:].split("+")
+        p_name = parts[0].split("/")[-1] if parts else "?"
+        s_name = parts[1].split("/")[-1] if len(parts) > 1 else "?"
+        _safe_print(f"    {C_BRIGHT_GREEN}  {p_name}{C_GRAY} + {C_BRIGHT_YELLOW}{s_name}{C_GRAY} via {provider} • {mode_str} • {C_BRIGHT_CYAN}DUAL ROUTER{C_RESET}")
+    else:
+        _safe_print(f"    {C_GRAY}  {model} via {provider} • {mode_str}{C_RESET}")
     _safe_print()
     _safe_print(f"    {C_GRAY}  Type {C_BRIGHT_CYAN}?{C_GRAY} for help • {C_BRIGHT_YELLOW}Tab{C_GRAY} to complete • {C_BRIGHT_YELLOW}Ctrl+C{C_GRAY} to cancel{C_RESET}")
     _safe_print()
@@ -1221,7 +1220,7 @@ def show_help():
 
     _safe_print(f"""
 {C_BOLD}{C_BRIGHT_CYAN}{_LINE_THIN * w}{C_RESET}
-{C_BOLD} TokioAI v5.0 — Help{C_RESET}
+{C_BOLD} TokioAI v5.2 — Help{C_RESET}
 {C_BOLD}{C_BRIGHT_CYAN}{_LINE_THIN * w}{C_RESET}
 
 {C_BOLD}Commands:{C_RESET}
@@ -1238,6 +1237,14 @@ def show_help():
   {C_BRIGHT_CYAN}config{C_RESET}            Show configuration
   {C_BRIGHT_CYAN}clear{C_RESET}             Clear screen
   {C_BRIGHT_CYAN}help{C_RESET}              This help
+
+{C_BOLD}Dual-Model Router:{C_RESET}
+  {C_BRIGHT_CYAN}model dual{C_RESET}        Switch to dual mode (K2.7-code 70% + K3 30%)
+  {C_BRIGHT_CYAN}dual{C_RESET}              Show router stats & recent routing decisions
+  {C_BRIGHT_CYAN}threshold <N>{C_RESET}     Set routing threshold (10-90, default 50)
+  {C_BRIGHT_CYAN}force k2.7{C_RESET}        Force all requests to K2.7-code
+  {C_BRIGHT_CYAN}force k3{C_RESET}          Force all requests to K3
+  {C_BRIGHT_CYAN}force auto{C_RESET}        Resume auto-routing
 
 {C_BOLD}Quick Commands (instant, no LLM):{C_RESET}
   {C_BRIGHT_GREEN}/status{C_RESET}           System overview
@@ -1423,10 +1430,19 @@ def process_message(ops: TokioOps, user_input: str):
     delta_out = output_t - getattr(ops, '_last_tracked_output', 0)
     ops._last_tracked_input = input_t
     ops._last_tracked_output = output_t
+
+    # For dual-model routing, track costs under the ACTUAL model used (not "dual:...")
+    cost_model = ops.router_active_model if ops.is_dual_mode else ops.model
     if delta_in > 0 or delta_out > 0:
-        _cost_tracker.add_usage(ops.model, delta_in, delta_out)
-        this_cost = _cost_tracker.estimate_single(ops.model, delta_in, delta_out)
+        _cost_tracker.add_usage(cost_model, delta_in, delta_out)
+        this_cost = _cost_tracker.estimate_single(cost_model, delta_in, delta_out)
         parts.append(f"{_ICON_COST} ~{this_cost} (session: {_cost_tracker.format_cost()})")
+
+    # Show which model was used in dual mode
+    if ops.is_dual_mode:
+        badge = ops.router_badge
+        badge_color = C_BRIGHT_GREEN if badge == "K2.7" else C_BRIGHT_YELLOW
+        parts.insert(0, f"{badge_color}[{badge}]{C_GRAY}")
 
     _safe_print(f"\n  {C_GRAY}{f' {_BOX_V} '.join(parts)}{C_RESET}")
 
@@ -1636,9 +1652,15 @@ def run_interactive(
         if lower == "stats":
             w = min(_term_width() - 4, 50)
             _safe_print(f"\n  {C_BOLD}{C_BRIGHT_CYAN}{_LINE_THIN * w}{C_RESET}")
-            _safe_print(f"  {C_BOLD}📊 Statistics{C_RESET}")
+            _safe_print(f"  {C_BOLD}Statistics{C_RESET}")
             _safe_print(f"  {C_BOLD}{C_BRIGHT_CYAN}{_LINE_THIN * w}{C_RESET}")
-            _safe_print(f"  Model:     {C_BOLD}{ops.model}{C_RESET}")
+            if ops.is_dual_mode:
+                _safe_print(f"  Mode:      {C_BOLD}{C_BRIGHT_YELLOW}DUAL-MODEL ROUTER{C_RESET}")
+                _safe_print(f"  Primary:   {C_BRIGHT_GREEN}{ops.router.primary_model}{C_RESET}")
+                _safe_print(f"  Secondary: {C_BRIGHT_YELLOW}{ops.router.secondary_model}{C_RESET}")
+                _safe_print(f"  Threshold: score >= {ops.router.threshold} -> secondary")
+            else:
+                _safe_print(f"  Model:     {C_BOLD}{ops.model}{C_RESET}")
             _safe_print(f"  Provider:  {ops.provider}")
             est = ops._estimate_tokens() if hasattr(ops, '_estimate_tokens') else 0
             _safe_print(f"  Messages:  {len(ops._messages)} (~{est:,} tokens, compacted {ops._compaction_count}x)")
@@ -1647,9 +1669,65 @@ def run_interactive(
             if _cost_tracker.model_usage:
                 _safe_print(f"\n  {C_BOLD}Per model:{C_RESET}")
                 for m, u in _cost_tracker.model_usage.items():
+                    short_name = m.split("/")[-1] if "/" in m else m
                     c = f"${u['cost']:.4f}" if u['cost'] < 0.01 else f"${u['cost']:.2f}"
-                    _safe_print(f"    {m}: {u['input']:,}in/{u['output']:,}out = {c}")
+                    _safe_print(f"    {short_name}: {u['input']:,}in/{u['output']:,}out = {c}")
+            # Show dual-model router stats
+            if ops.is_dual_mode and ops.router:
+                rs = ops.router.stats
+                if rs.total_calls > 0:
+                    _safe_print(f"\n  {C_BOLD}Router Stats:{C_RESET}")
+                    _safe_print(f"    K2.7-code: {rs.primary_calls} calls ({rs.primary_ratio*100:.0f}%) = ${rs.primary_cost:.4f}")
+                    _safe_print(f"    K3:        {rs.secondary_calls} calls ({(1-rs.primary_ratio)*100:.0f}%) = ${rs.secondary_cost:.4f}")
+                    if rs.savings_estimate > 0:
+                        _safe_print(f"    {C_BRIGHT_GREEN}Saved: ${rs.savings_estimate:.4f} vs all-K3{C_RESET}")
+                    if rs.last_decisions:
+                        _safe_print(f"\n  {C_BOLD}Recent routing:{C_RESET}")
+                        for d in rs.last_decisions[-5:]:
+                            color = C_BRIGHT_GREEN if d["model"] == "K2.7" else C_BRIGHT_YELLOW
+                            _safe_print(f"    [{d['time']}] {color}{d['model']}{C_RESET} (score={d['score']}) {C_GRAY}{d['query'][:45]}{C_RESET}")
             _safe_print(f"  {C_BOLD}{C_BRIGHT_CYAN}{_LINE_THIN * w}{C_RESET}\n")
+            continue
+
+        # Dual-model router command
+        if lower == "dual" or lower == "router":
+            if not ops.is_dual_mode:
+                _safe_print(f"  {C_GRAY}Not in dual-model mode. Switch with: model dual{C_RESET}")
+            else:
+                _safe_print(f"\n{ops.router.format_stats()}")
+            continue
+
+        if lower.startswith("dual threshold ") or lower.startswith("threshold "):
+            if ops.is_dual_mode:
+                try:
+                    val = int(lower.split()[-1])
+                    if 10 <= val <= 90:
+                        ops.router.threshold = val
+                        _safe_print(f"  {C_BRIGHT_GREEN}OK{C_RESET} Threshold = {val} (lower = more K3, higher = more K2.7)")
+                    else:
+                        _safe_print(f"  {C_GRAY}Threshold must be 10-90 (current: {ops.router.threshold}){C_RESET}")
+                except ValueError:
+                    _safe_print(f"  {C_GRAY}Usage: threshold <10-90>{C_RESET}")
+            else:
+                _safe_print(f"  {C_GRAY}Not in dual-model mode.{C_RESET}")
+            continue
+
+        if lower.startswith("force "):
+            if ops.is_dual_mode:
+                arg = lower[6:].strip()
+                if arg in ("auto", "none", "off"):
+                    ops.router.force(None)
+                    _safe_print(f"  {C_BRIGHT_GREEN}OK{C_RESET} Router back to auto mode")
+                elif arg in ("k2.7", "k27", "primary", "code", "cheap"):
+                    ops.router.force(ops.router.primary_model)
+                    _safe_print(f"  {C_BRIGHT_GREEN}OK{C_RESET} Forced to K2.7-code (type 'force auto' to restore)")
+                elif arg in ("k3", "secondary", "smart", "pro"):
+                    ops.router.force(ops.router.secondary_model)
+                    _safe_print(f"  {C_BRIGHT_YELLOW}OK{C_RESET} Forced to K3 (type 'force auto' to restore)")
+                else:
+                    _safe_print(f"  {C_GRAY}Usage: force k2.7 | force k3 | force auto{C_RESET}")
+            else:
+                _safe_print(f"  {C_GRAY}Not in dual-model mode.{C_RESET}")
             continue
 
         # Model switch
@@ -1664,6 +1742,30 @@ def run_interactive(
             old_model = ops.model
             new_provider = current_provider
             need_new_client = False
+
+            # ── Dual-model router mode ──
+            if new_model.startswith("dual:"):
+                or_key = os.getenv("OPENROUTER_API_KEY")
+                if not or_key:
+                    _safe_print(f"  {C_BRIGHT_YELLOW}!{C_RESET}  Dual mode requires OPENROUTER_API_KEY. Run: tokioai --setup")
+                    continue
+                try:
+                    old_msgs = ops._messages
+                    ops = TokioOps(provider="openrouter", model=new_model)
+                    ops._messages = old_msgs
+                    ops._max_rounds = max_rounds
+                    ops._max_time = max_time
+                    current_provider = "openrouter"
+                    current_model = new_model
+                    parts = new_model[5:].split("+")
+                    p_name = parts[0].split("/")[-1] if parts else "?"
+                    s_name = parts[1].split("/")[-1] if len(parts) > 1 else "?"
+                    _safe_print(f"  {C_BRIGHT_GREEN}OK{C_RESET} {old_model} -> {C_BRIGHT_GREEN}{p_name}{C_RESET} + {C_BRIGHT_YELLOW}{s_name}{C_RESET} (DUAL ROUTER)")
+                    _safe_print(f"  {C_GRAY}Auto-routes: simple -> K2.7-code, complex -> K3{C_RESET}")
+                    _safe_print(f"  {C_GRAY}Commands: dual (stats), threshold N, force k2.7/k3/auto{C_RESET}")
+                except Exception as e:
+                    _safe_print(f"  {C_BRIGHT_RED}!{C_RESET} Failed: {e}")
+                continue
 
             # OpenRouter models contain "/" (e.g., moonshotai/kimi-k3, anthropic/claude-sonnet-4)
             if "/" in new_model and current_provider != "openrouter":
@@ -1921,7 +2023,7 @@ def run_setup():
 
     _safe_print(f"""
 {C_BOLD}{C_BRIGHT_CYAN}{'=' * w}{C_RESET}
-{C_BOLD}  TokioAI v5.0 — Setup{C_RESET}
+{C_BOLD}  TokioAI v5.2 — Setup{C_RESET}
 {C_BOLD}{C_BRIGHT_CYAN}{'=' * w}{C_RESET}
 """)
 
@@ -2087,7 +2189,9 @@ def run_setup():
                 _safe_print(f"\n  {C_BRIGHT_RED}API key is required.{C_RESET}")
                 return
             _safe_print(f"\n  {C_BOLD}Available models:{C_RESET}")
+            _safe_print(f"    {C_BRIGHT_GREEN}dual{C_RESET}        → {C_BRIGHT_GREEN}K2.7-code{C_RESET}+{C_BRIGHT_YELLOW}K3{C_RESET} auto-router {C_GRAY}(SMART: cheap 70% + smart 30%){C_RESET}")
             _safe_print(f"    {C_BRIGHT_CYAN}kimi-k3{C_RESET}     → Kimi K3             {C_GRAY}(1M ctx, $3/$15 per 1M tok){C_RESET}")
+            _safe_print(f"    {C_BRIGHT_CYAN}k27{C_RESET}         → Kimi K2.7-code      {C_GRAY}(131K ctx, $0.71/$3.5 per 1M tok){C_RESET}")
             _safe_print(f"    {C_BRIGHT_CYAN}or-gemini31{C_RESET} → Gemini 3.1 Pro       {C_GRAY}(1M ctx, $2/$12 per 1M tok){C_RESET}")
             _safe_print(f"    {C_BRIGHT_CYAN}or-gemini3{C_RESET}  → Gemini 3.6 Flash     {C_GRAY}(1M ctx, $1.5/$7.5 per 1M tok){C_RESET}")
             _safe_print(f"    {C_BRIGHT_CYAN}or-claude{C_RESET}   → Claude Sonnet 4      {C_GRAY}(1M ctx, $3/$15 per 1M tok){C_RESET}")

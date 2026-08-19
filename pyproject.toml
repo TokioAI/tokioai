@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tokioai"
-version = "5.1.0"
+version = "5.2.0"
 description = "TokioAI — Cybersecurity, DevOps, Engineering."
 readme = "README.md"
 license = {text = "MIT"}

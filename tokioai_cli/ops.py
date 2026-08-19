@@ -76,6 +76,16 @@ MODEL_ALIASES = {
     # ── Kimi via OpenRouter (auto-resolve) ──
     "kimi-k3": "moonshotai/kimi-k3",
     "k3": "moonshotai/kimi-k3",
+    "kimi-k2.7": "moonshotai/kimi-k2.7-code",
+    "kimi-k27": "moonshotai/kimi-k2.7-code",
+    "k27": "moonshotai/kimi-k2.7-code",
+    "k2.7": "moonshotai/kimi-k2.7-code",
+    "kimi-code": "moonshotai/kimi-k2.7-code",
+    # ── Dual-Model Router (auto K2.7 + K3) ──
+    "dual": "dual:moonshotai/kimi-k2.7-code+moonshotai/kimi-k3",
+    "kimi-dual": "dual:moonshotai/kimi-k2.7-code+moonshotai/kimi-k3",
+    "k2k3": "dual:moonshotai/kimi-k2.7-code+moonshotai/kimi-k3",
+    "dual-kimi": "dual:moonshotai/kimi-k2.7-code+moonshotai/kimi-k3",
     # ── OpenRouter ──
     "or-claude": "anthropic/claude-sonnet-4",
     "or-opus": "anthropic/claude-opus-4",
@@ -88,6 +98,8 @@ MODEL_ALIASES = {
     "or-kimi": "moonshotai/kimi-k2",
     "or-kimi3": "moonshotai/kimi-k3",
     "or-k3": "moonshotai/kimi-k3",
+    "or-k27": "moonshotai/kimi-k2.7-code",
+    "or-kimi-code": "moonshotai/kimi-k2.7-code",
 }
 
 
@@ -1149,6 +1161,30 @@ class TokioOps:
             self._model = defaults.get(provider, MODEL)
         else:
             self._model = model or MODEL
+
+        # ── Dual-Model Router ──
+        # If model starts with "dual:", parse it and set up the router
+        self._router = None          # DualModelRouter instance (None = single model)
+        self._router_active_model = None  # which model the router picked for current turn
+        if isinstance(self._model, str) and self._model.startswith("dual:"):
+            try:
+                from tokioai_cli.router import DualModelRouter
+                parts = self._model[5:].split("+")
+                primary = parts[0] if len(parts) > 0 else "moonshotai/kimi-k2.7-code"
+                secondary = parts[1] if len(parts) > 1 else "moonshotai/kimi-k3"
+                threshold = int(os.getenv("DUAL_THRESHOLD", "50"))
+                self._router = DualModelRouter(
+                    primary_model=primary,
+                    secondary_model=secondary,
+                    threshold=threshold,
+                )
+                # For the actual API client, use openrouter (both models are on OpenRouter)
+                self._provider_name = "openrouter"
+                self._model = primary  # default to primary, router overrides per-request
+            except Exception as e:
+                print(f"WARNING: Failed to init DualModelRouter: {e}. Using single model.")
+                self._router = None
+
         self._client, self._client_type = init_client(self._provider_name)
         self._messages: list[dict] = []
         self._gemini_history: list = []  # Persistent Gemini contents
@@ -1196,6 +1232,28 @@ class TokioOps:
     @property
     def provider(self) -> str:
         return self._provider_name
+
+    @property
+    def is_dual_mode(self) -> bool:
+        """True if running in dual-model router mode."""
+        return self._router is not None
+
+    @property
+    def router(self):
+        """Access the DualModelRouter (None if single model)."""
+        return self._router
+
+    @property
+    def router_active_model(self) -> str:
+        """The model the router picked for the most recent request."""
+        return self._router_active_model or self._model
+
+    @property
+    def router_badge(self) -> str:
+        """Short display badge for the active routed model."""
+        if self._router and self._router_active_model:
+            return self._router.format_badge(self._router_active_model)
+        return ""
 
     @property
     def token_usage_str(self) -> str:
@@ -1493,18 +1551,48 @@ class TokioOps:
                       If provided and stream=True, tokens are emitted incrementally.
             stream: Enable streaming mode (token-by-token output).
         """
-        if self._client_type == "anthropic":
-            if stream and on_token:
-                return self._chat_anthropic_stream(user_input, on_tool_start, on_tool_end, on_text, on_token)
-            return self._chat_anthropic(user_input, on_tool_start, on_tool_end, on_text)
-        elif self._client_type == "openai":
-            if stream and on_token:
-                return self._chat_openai_stream(user_input, on_tool_start, on_tool_end, on_text, on_token)
-            return self._chat_openai(user_input, on_tool_start, on_tool_end, on_text)
-        elif self._client_type == "gemini":
-            return self._chat_gemini(user_input, on_tool_start, on_tool_end, on_text)
-        else:
-            return f"ERROR: Unknown client type {self._client_type}"
+        # ── Dual-Model Router: pick the right model for this request ──
+        if self._router:
+            has_tool = any(self._has_tool_use(m) for m in self._messages[-2:]) if self._messages else False
+            routed_model = self._router.route(
+                user_input,
+                conversation_depth=len(self._messages) // 2,
+                has_tool_results=has_tool,
+            )
+            self._router_active_model = routed_model
+            # Temporarily set the model for this request
+            saved_model = self._model
+            self._model = routed_model
+
+        # Snapshot tokens BEFORE call for router delta tracking
+        pre_input = self._total_input_tokens
+        pre_output = self._total_output_tokens
+
+        try:
+            if self._client_type == "anthropic":
+                if stream and on_token:
+                    result = self._chat_anthropic_stream(user_input, on_tool_start, on_tool_end, on_text, on_token)
+                else:
+                    result = self._chat_anthropic(user_input, on_tool_start, on_tool_end, on_text)
+            elif self._client_type == "openai":
+                if stream and on_token:
+                    result = self._chat_openai_stream(user_input, on_tool_start, on_tool_end, on_text, on_token)
+                else:
+                    result = self._chat_openai(user_input, on_tool_start, on_tool_end, on_text)
+            elif self._client_type == "gemini":
+                result = self._chat_gemini(user_input, on_tool_start, on_tool_end, on_text)
+            else:
+                result = f"ERROR: Unknown client type {self._client_type}"
+        finally:
+            # ── Record router usage and restore model ──
+            if self._router:
+                delta_in = self._total_input_tokens - pre_input
+                delta_out = self._total_output_tokens - pre_output
+                if delta_in > 0 or delta_out > 0:
+                    self._router.record_usage(routed_model, delta_in, delta_out)
+                self._model = saved_model  # restore to "dual:..." display name
+
+        return result
 
     # ── Anthropic (Claude — direct API or Vertex) ─────────
 
@@ -1559,7 +1647,7 @@ class TokioOps:
                     if _should_retry(err_str) and attempt < MAX_API_RETRIES:
                         delay = _backoff_delay(attempt)
                         if on_text:
-                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES}) -- {type(e).__name__}: {err_str[:100]}]\n")
+                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES})]\n")
                         # Refresh credentials on auth errors
                         if "invalid_grant" in err_str.lower() or "invalid jwt" in err_str.lower():
                             try:
@@ -1712,7 +1800,7 @@ class TokioOps:
                     if _should_retry(err_str) and attempt < MAX_API_RETRIES:
                         delay = _backoff_delay(attempt)
                         if on_text:
-                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES}) -- {type(e).__name__}: {err_str[:100]}]\n")
+                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES})]\n")
                         # Refresh credentials on auth errors
                         if "invalid_grant" in err_str.lower() or "invalid jwt" in err_str.lower():
                             try:
@@ -1903,7 +1991,7 @@ class TokioOps:
                     if _should_retry(err_str) and attempt < MAX_API_RETRIES:
                         delay = _backoff_delay(attempt)
                         if on_text:
-                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES}) -- {type(e).__name__}: {err_str[:100]}]\n")
+                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES})]\n")
                         time.sleep(delay)
                         continue
                     return f"API Error: {e}"
@@ -2049,7 +2137,7 @@ class TokioOps:
                     if _should_retry(err_str) and attempt < MAX_API_RETRIES:
                         delay = _backoff_delay(attempt)
                         if on_text:
-                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES}) -- {type(e).__name__}: {err_str[:100]}]\n")
+                            on_text(f"\n[API error, retrying in {delay:.1f}s... ({attempt+1}/{MAX_API_RETRIES})]\n")
                         time.sleep(delay)
                         continue
                     return f"API Error: {e}"
