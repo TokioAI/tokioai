@@ -17,6 +17,8 @@ import sys
 import time
 from typing import Optional, Callable
 
+from tokioai_cli import safety as _safety
+
 # ---------------------------------------------------------------------------
 # Model aliases — human-friendly names → real model IDs
 # ---------------------------------------------------------------------------
@@ -1172,7 +1174,7 @@ class TokioOps:
                 parts = self._model[5:].split("+")
                 primary = parts[0] if len(parts) > 0 else "moonshotai/kimi-k2.7-code"
                 secondary = parts[1] if len(parts) > 1 else "moonshotai/kimi-k3"
-                threshold = int(os.getenv("DUAL_THRESHOLD", "50"))
+                threshold = int(os.getenv("DUAL_THRESHOLD", "45"))
                 self._router = DualModelRouter(
                     primary_model=primary,
                     secondary_model=secondary,
@@ -1200,6 +1202,11 @@ class TokioOps:
         self._state = "idle"  # state machine: idle → thinking → tool_exec → done
         self._hooks: dict[str, list[Callable]] = {}  # event → [callbacks]
 
+        # ── Local Safety Guard ──
+        # Sanitizes PII/secrets from messages BEFORE they leave this machine.
+        self._guard = _safety.default_guard()
+        self._last_safety_report: Optional[_safety.SafetyReport] = None
+
     @property
     def state(self) -> str:
         return self._state
@@ -1220,6 +1227,62 @@ class TokioOps:
         old = self._state
         self._state = new_state
         self._emit("state_change", old_state=old, new_state=new_state)
+
+    def _prepare_api_messages(self, messages: list[dict]) -> tuple[list[dict], str]:
+        """Return a sanitized copy of messages for API calls + a safety summary.
+
+        The original message history is kept intact so the agent retains context.
+        Only the outgoing payload is redacted.
+        """
+        if not self._guard:
+            return list(messages), ""
+        clean, reports = self._guard.sanitize_messages(messages)
+        if reports:
+            merged = _safety.SafetyReport()
+            for r in reports:
+                merged.redactions.extend(r.redactions)
+                if r.blocked:
+                    merged.blocked = True
+                    merged.block_reason = r.block_reason
+            self._last_safety_report = merged
+            summary = _safety.format_report(merged)
+            return clean, summary
+        self._last_safety_report = _safety.SafetyReport()
+        return clean, ""
+
+    def _safe_system_prompt(self) -> str:
+        """Return the system prompt with PII/secrets redacted."""
+        raw = _build_system_prompt()
+        if not self._guard:
+            return raw
+        clean, _ = self._guard.sanitize(raw)
+        return clean
+
+    def _sanitize_gemini_contents(self, contents: list) -> list:
+        """Sanitize text parts in Gemini Content objects before API upload."""
+        if not self._guard or not contents:
+            return list(contents)
+        try:
+            from google.genai import types
+        except Exception:
+            return list(contents)
+        out = []
+        for c in contents:
+            if not hasattr(c, "parts"):
+                out.append(c)
+                continue
+            new_parts = []
+            for part in c.parts:
+                text = None
+                if hasattr(part, "text") and part.text:
+                    text = part.text
+                if text is not None:
+                    clean, _ = self._guard.sanitize(text)
+                    new_parts.append(types.Part.from_text(text=clean))
+                else:
+                    new_parts.append(part)
+            out.append(types.Content(role=getattr(c, "role", "user"), parts=new_parts))
+        return out
 
     @property
     def model(self) -> str:
@@ -1620,6 +1683,10 @@ class TokioOps:
             self._fix_orphaned_tool_use()
             self._set_state("thinking")
             self._emit("pre_api", model=self._model, turn=turn)
+            # Sanitize outgoing messages locally before they touch any API
+            api_messages, safety_summary = self._prepare_api_messages(self._messages)
+            if safety_summary and on_text:
+                on_text(f"\n[{safety_summary}]\n")
             # API call with exponential backoff on retryable errors
             response = None
             for attempt in range(MAX_API_RETRIES + 1):
@@ -1627,9 +1694,9 @@ class TokioOps:
                     response = self._client.messages.create(
                         model=self._model,
                         max_tokens=MAX_TOKENS,
-                        system=_build_system_prompt(),
+                        system=self._safe_system_prompt(),
                         tools=TOOLS,
-                        messages=self._messages,
+                        messages=api_messages,
                         timeout=120.0,
                     )
                     break  # success
@@ -1774,6 +1841,10 @@ class TokioOps:
             self._fix_orphaned_tool_use()
             self._set_state("thinking")
             self._emit("pre_api", model=self._model, turn=turn)
+            # Sanitize outgoing messages locally before they touch any API
+            api_messages, safety_summary = self._prepare_api_messages(self._messages)
+            if safety_summary and on_text:
+                on_text(f"\n[{safety_summary}]\n")
             # API call with backoff
             stream_obj = None
             for attempt in range(MAX_API_RETRIES + 1):
@@ -1781,9 +1852,9 @@ class TokioOps:
                     stream_obj = self._client.messages.create(
                         model=self._model,
                         max_tokens=MAX_TOKENS,
-                        system=_build_system_prompt(),
+                        system=self._safe_system_prompt(),
                         tools=TOOLS,
-                        messages=self._messages,
+                        messages=api_messages,
                         timeout=120.0,
                         stream=True,
                     )
@@ -1966,11 +2037,15 @@ class TokioOps:
             self._fix_orphaned_tool_use()
             self._set_state("thinking")
             self._emit("pre_api", provider="openai", turn=turn)
+            # Sanitize outgoing messages locally before they touch any API
+            api_messages, safety_summary = self._prepare_api_messages(self._messages)
+            if safety_summary and on_text:
+                on_text(f"\n[{safety_summary}]\n")
             # API call with exponential backoff
             response = None
             for attempt in range(MAX_API_RETRIES + 1):
                 try:
-                    msgs = [{"role": "system", "content": _build_system_prompt()}] + self._messages
+                    msgs = [{"role": "system", "content": self._safe_system_prompt()}] + api_messages
                     response = self._client.chat.completions.create(
                         model=self._model,
                         messages=msgs,
@@ -2112,10 +2187,15 @@ class TokioOps:
 
         for turn in range(effective_limit):
             self._fix_orphaned_tool_use()
+            self._set_state("thinking")
+            # Sanitize outgoing messages locally before they touch any API
+            api_messages, safety_summary = self._prepare_api_messages(self._messages)
+            if safety_summary and on_text:
+                on_text(f"\n[{safety_summary}]\n")
             stream_obj = None
             for attempt in range(MAX_API_RETRIES + 1):
                 try:
-                    msgs = [{"role": "system", "content": _build_system_prompt()}] + self._messages
+                    msgs = [{"role": "system", "content": self._safe_system_prompt()}] + api_messages
                     stream_obj = self._client.chat.completions.create(
                         model=self._model,
                         messages=msgs,
@@ -2293,16 +2373,21 @@ class TokioOps:
 
             gemini_tools = [types.Tool(function_declarations=fn_decls)]
 
+            # Sanitize user input before it enters local history
+            safe_user_input, gemini_summary = self._guard.sanitize(user_input)
+            if gemini_summary and on_text:
+                on_text(f"\n[{gemini_summary}]\n")
+
             # Append new user message to persistent history
             self._gemini_history.append(types.Content(
                 role="user",
-                parts=[types.Part.from_text(text=user_input)],
+                parts=[types.Part.from_text(text=safe_user_input)],
             ))
             # Work with a copy so tool-call turns are included
             contents = list(self._gemini_history)
 
             config = types.GenerateContentConfig(
-                system_instruction=_build_system_prompt(),
+                system_instruction=self._safe_system_prompt(),
                 tools=gemini_tools,
                 max_output_tokens=MAX_TOKENS,
             )
@@ -2311,13 +2396,15 @@ class TokioOps:
             for turn in range(effective_limit):
                 self._set_state("thinking")
                 self._emit("pre_api", provider="gemini", turn=turn)
+                # Sanitize all text parts before sending to API
+                api_contents = self._sanitize_gemini_contents(contents)
                 # API call with exponential backoff
                 response = None
                 for attempt in range(MAX_API_RETRIES + 1):
                     try:
                         response = self._client.models.generate_content(
                             model=self._model,
-                            contents=contents,
+                            contents=api_contents,
                             config=config,
                         )
                         break

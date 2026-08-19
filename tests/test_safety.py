@@ -21,6 +21,14 @@ class TestSafetyGuard:
         assert "[REDACTED_API_KEY_1]" in clean
         assert report.redacted_categories == {"api_key": 1}
 
+    def test_openrouter_key_redacted(self):
+        g = default_guard()
+        text = "My OpenRouter key is sk-or-v1-1234567890abcdef1234567890abcdef1234567890abcdef"
+        clean, report = g.sanitize(text)
+        assert "sk-or-v1-" not in clean
+        assert "[REDACTED_API_KEY_1]" in clean
+        assert report.redacted_categories == {"api_key": 1}
+
     def test_email_redacted(self):
         g = default_guard()
         text = "Contact me at admin@example.com please"

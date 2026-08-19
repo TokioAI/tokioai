@@ -108,13 +108,17 @@ _COMPLEX_KEYWORDS = {
     # Architecture & design
     "architect", "architecture", "design pattern", "system design", "trade-off",
     "tradeoff", "scalability", "microservice", "monolith", "distributed",
+    "zero trust", "ci/cd", "cicd", "pipeline", "pipeline secure",
     # Security deep analysis
-    "vulnerability", "vulnerabilities", "exploit", "penetration", "threat model",
+    "vulnerability", "vulnerabilities", "exploit", "exploitation", "penetration",
+    "penetration test", "pentest", "threat model", "threat modeling",
     "attack surface", "zero-day", "0day", "reverse engineer", "malware", "forensic",
-    "incident response", "cve-", "privilege escalation", "lateral movement",
-    "persistence", "hardening",
+    "incident response", "incident", "cve-", "cve", "cvss", "ssrf", "ransomware",
+    "privilege escalation", "lateral movement", "persistence", "hardening",
+    "security audit", "security strategy", "risk analysis", "riesgo", "riesgos",
+    "mitigar", "mitigate", "zero trust", "dns amplification", "amplificacion dns",
     # Strategy & planning
-    "strategy", "roadmap", "migration plan", "refactor", "rewrite from scratch",
+    "strategy", "estrategia", "roadmap", "migration plan", "refactor", "rewrite from scratch",
     "pros and cons", "compare", "versus", "which is better", "recommend",
     "should i", "best approach", "best practice", "production deployment",
     "high load", "under load", "at scale",
@@ -122,10 +126,10 @@ _COMPLEX_KEYWORDS = {
     "explain why", "reason about", "analyze", "deep dive", "in-depth",
     "philosophical", "ethical", "implication", "implications", "consequences",
     "security implication", "what are the", "how does.*work",
-    "creative", "brainstorm", "innovate", "novel approach",
+    "creative", "brainstorm", "brainstorming", "innovate", "novel approach",
     # Multi-step reasoning
     "step by step", "walk me through", "comprehensive", "thorough",
-    "full audit", "security audit", "complete review", "end to end", "from scratch",
+    "full audit", "complete review", "end to end", "from scratch",
     # Complex code tasks
     "optimize algorithm", "time complexity", "space complexity",
     "concurrency", "race condition", "deadlock", "memory leak",
@@ -157,17 +161,25 @@ _SIMPLE_KEYWORDS = {
 
 # Patterns that suggest complex multi-turn reasoning
 _COMPLEX_PATTERNS = [
-    r"\b(why|how)\b.*\b(work|fail|crash|break|slow|handle|manage)\b",  # "why does X fail" / "how does X handle"
+    r"\b(compara)\b.*\b(tcp|udp|http|https|ipv4|ipv6|sql|nosql|rest|grpc|graphql|vpn)\b",
+    r"\b(why|how)\b.*\b(work|fail|crash|break|slow|handle|manage)\b",
     r"\b(design|build|create|implement)\b.*\b(system|platform|framework|engine|model|gateway)\b",
     r"\b(secure|harden|protect|defend)\b.*\b(against|from)\b",
     r"\b(compare|contrast|evaluate|assess)\b",
     r"\b(what if|suppose|imagine|consider)\b",
     r"\b(review|audit|analyze)\b.*\b(code|security|performance|infra|log|system|vulnerabilit)\b",
-    r"\b(explain|explica)\b.*\b(detail|depth|thoroughly|fully)\b",
-    r"\bin[- ]depth\b",  # "in depth" / "in-depth" anywhere
+    r"\b(explain|explica)\b.*\b(detail|depth|thoroughly|fully|detalle|profundidad)\b",
+    r"\b(paso a paso|paso por paso)\b",
+    r"\bin[- ]depth\b",
     r"\b(threat model|attack surface)\b",
     r"\b(ventajas y desventajas|pros y contras|mejor manera|mejor enfoque)\b",
     r"\b(escalaci[oó]n|privilegio|c[oó]mo funciona)\b",
+    r"\b(razona|analiza|diseña|compara|evalúa|evalua)\b.*\b(profundidad|detalle|enfoque|estrategia)\b",
+    r"\b(analisis|análisis)\b.*\b(seguridad|seguridades|red|infraestructura|vulnerabilidad)\b",
+    r"\b(guía|guia|guide)\b.*\b(completa|completo|full|complete|thorough)\b",
+    r"\b(diseña|disena|disena)\b.*\b(arquitectura|architecture|system|sistema|plataforma|platform)\b",
+    r"\b(pentest|pentesting|penetration test)\b.*\b(plan|strategy|estrategia|informe|report)\b",
+    r"\b(hardening|seguridad)\b.*\b(guía|guia|guide|completa|completo|kubernetes|linux|infra)\b",
 ]
 
 # Patterns that suggest simple direct tasks
@@ -192,13 +204,13 @@ def classify_complexity(user_input: str, conversation_depth: int = 0,
       - score >= 50 → SECONDARY (K3)
     """
     text = user_input.lower().strip()
-    score = 25  # baseline: slightly simple
+    score = 30  # baseline: neutral/slightly simple
     reasons = []
 
     # ── Length heuristic ──
     word_count = len(text.split())
     if word_count <= 8:
-        score -= 10
+        score -= 5
         reasons.append("short_query")
     elif word_count >= 50:
         score += 15
@@ -217,8 +229,37 @@ def classify_complexity(user_input: str, conversation_depth: int = 0,
                                       "design", "analyze", "analiza", "explica",
                                       "compara", "diseña", "evalua", "evalúa")
     ):
+        # Defer direct_command penalty: if Spanish complex signals present, keep score up
+        pass  # penalty applied after es_complex check below
+
+    # ── Spanish language patterns ──
+    es_complex = sum(1 for w in (
+        "explicame", "explícame", "analiza", "compara", "diseña", "diseño",
+        "cómo funciona", "como funciona", "por qué", "por que",
+        "qué pasaría", "que pasaria", "recomienda", "evalúa", "evalua",
+        "estrategia", "arquitectura", "vulnerabilidad", "vulnerabilidades",
+        "implicacion", "implicaciones", "seguridad", "privilege",
+        "escalation", "escalacion", "amenaza", "threat", "mejor enfoque",
+        "mejor manera", "la mejor", "pros y contras", "ventajas y desventajas",
+        "paso a paso", "razona", "razonamiento", "profundidad", "detalle",
+        "en detalle", "a fondo", "brainstorm", "idear", "plan estrategico",
+        "guia completa", "guía completa", "diseña una",
+    ) if w in text)
+    if es_complex > 0:
+        score += es_complex * 12
+        reasons.append(f"complex_es({es_complex})")
+    # Apply deferred direct_command penalty only if no complex Spanish signals
+    elif question_marks == 0 and word_count <= 10 and not any(
+        text.startswith(w) for w in ("how ", "why ", "what ", "explain", "compare",
+                                      "design", "analyze", "analiza", "explica",
+                                      "compara", "diseña", "evalua", "evalúa")
+    ):
         score -= 5
         reasons.append("direct_command")
+    if any(w in text for w in ("ejecuta", "instala", "reinicia", "muestra", "busca",
+                                 "crea", "borra", "abre", "cierra", "revisa")):
+        score -= 8
+        reasons.append("simple_es")
 
     # ── Keyword matching ──
     # Use word-boundary matching for short keywords to avoid false substring matches
@@ -232,8 +273,33 @@ def classify_complexity(user_input: str, conversation_depth: int = 0,
     simple_hits = sum(1 for kw in _SIMPLE_KEYWORDS if _kw_match(kw, text))
 
     if complex_hits > 0:
-        score += min(complex_hits * 15, 60)  # each complex keyword is strong signal
+        score += min(complex_hits * 18, 70)  # each complex keyword is strong signal
         reasons.append(f"complex_kw({complex_hits})")
+
+    # ── Strong complex signals override ──
+    # If the query asks for design, architecture, comprehensive guide, or pentest,
+    # force it to K3 even if it looks short/direct.
+    strong_complex_patterns = [
+        r"\b(diseñ[ao]|disena|disena|diseño)\b.*\b(arquitectura|sistema|plataforma|microservicio|ecommerce|app|web|zero trust)\b",
+        r"\b(arquitectura|architecture|zero trust)\b.*\b(microservicio|sistema|distribuido|ecommerce|plataforma|cloud|seguridad)\b",
+        r"\b(guía|guia|guide)\b.*\b(completa|completo|full|complete|thorough|total)\b.*\b(hardening|seguridad|kubernetes|linux|respuesta|incidentes|incident response)\b",
+        r"\b(guía|guia|guide)\b.*\b(respuesta a incidentes|incident response|hardening|seguridad)\b",
+        r"\b(pentest|pentesting|penetration test)\b.*\b(plan|estrategia|informe|report|red|interna|empresa)\b",
+        r"\b(plan)\b.*\b(incident response|respuesta a incidentes|incidente|security strategy)\b",
+        r"\b(estrategia)\b.*\b(backup|disaster recovery|recovery|recuperación)\b",
+        r"\b(razona|analiza|evalúa|evalua)\b.*\b(paso a paso|profundidad|detalle|fondo|trade-off|tradeoff)\b",
+        r"\b(análisis|analisis|analysis)\b.*\b(riesgo|riesgos|risk|seguridad|red|infraestructura)\b",
+        r"\b(mitigar|mitigate|defend|defender)\b.*\b(ssrf|cve|ransomware|ataque|attack|vulnerabilidad)\b",
+        r"\b(dns amplification|amplificacion dns|amplification)\b.*\b(attack|ataque|works|funciona)\b",
+        r"\b(design|build|create|implement)\b.*\b(secure|security|seguro|seguridad)\b.*\b(ci/cd|pipeline|cicd)\b",
+        r"\b(playbook|runbook|plan)\b.*\b(incident|response|respuesta|seguridad|security)\b",
+        r"\b(incident response playbook|playbook de respuesta|incident playbook|security playbook)\b",
+        r"\b(create|make|write|prepare)\b.*\b(incident response|playbook|respuesta a incidentes)\b",
+    ]
+    if any(re.search(p, text) for p in strong_complex_patterns):
+        score = max(score, 55)
+        reasons.append("strong_complex_signal")
+
     if simple_hits > 0:
         # Simple keywords carry LESS weight when complex keywords are also present
         # (e.g. "analyze this code for vulnerabilities" has both "analyze" and "fix")
@@ -277,23 +343,6 @@ def classify_complexity(user_input: str, conversation_depth: int = 0,
         score -= 5
         reasons.append("post_tool")
 
-    # ── Spanish language patterns ──
-    es_complex = sum(1 for w in (
-        "explicame", "explícame", "analiza", "compara", "diseña", "diseña",
-        "cómo funciona", "como funciona", "por qué", "por que",
-        "qué pasaría", "que pasaria", "recomienda", "evalúa", "evalua",
-        "estrategia", "arquitectura", "vulnerabilidad", "vulnerabilidades",
-        "implicacion", "implicaciones", "seguridad", "privilege",
-        "escalation", "escalacion", "amenaza", "threat", "mejor enfoque",
-        "mejor manera", "la mejor", "pros y contras", "ventajas y desventajas",
-    ) if w in text)
-    if es_complex > 0:
-        score += es_complex * 10
-        reasons.append(f"complex_es({es_complex})")
-    if any(w in text for w in ("ejecuta", "instala", "reinicia", "muestra", "busca",
-                                 "crea", "borra", "abre", "cierra", "revisa")):
-        score -= 8
-        reasons.append("simple_es")
 
     # ── Clamp score ──
     score = max(0, min(100, score))
@@ -317,7 +366,7 @@ class DualModelRouter:
         self,
         primary_model: str = DEFAULT_PRIMARY,
         secondary_model: str = DEFAULT_SECONDARY,
-        threshold: int = 50,  # score >= threshold -> secondary
+        threshold: int = 45,  # score >= threshold -> secondary
     ):
         self.primary_model = primary_model
         self.secondary_model = secondary_model

@@ -92,6 +92,11 @@ def _build_default_patterns() -> List[SecretPattern]:
         re.compile(r"\b(sk-ant-api03-[a-zA-Z0-9_-]{32,})\b"),
     ))
     patterns.append(SecretPattern(
+        "openrouter_api_key",
+        "api_key",
+        re.compile(r"\b(sk-or-v1-[a-zA-Z0-9_-]{48,})\b"),
+    ))
+    patterns.append(SecretPattern(
         "google_api_key",
         "api_key",
         re.compile(r"\b(AIza[0-9A-Za-z_-]{35})\b"),

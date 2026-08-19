@@ -1339,6 +1339,10 @@ def show_help():
   {C_BRIGHT_CYAN}force k3{C_RESET}          Force all requests to K3
   {C_BRIGHT_CYAN}force auto{C_RESET}        Resume auto-routing
 
+{C_BOLD}Safety Layer:{C_RESET}
+  {C_BRIGHT_CYAN}safety{C_RESET}            Show safety status & last redaction summary
+  {C_BRIGHT_CYAN}safety allow <val>{C_RESET}  Add a value to the allow-list
+
 {C_BOLD}Quick Commands (instant, no LLM):{C_RESET}
   {C_BRIGHT_GREEN}/status{C_RESET}           System overview
   {C_BRIGHT_GREEN}/sitrep{C_RESET}           Full situation report
@@ -1822,6 +1826,32 @@ def run_interactive(
                     _safe_print(f"  {C_GRAY}Usage: force k2.7 | force k3 | force auto{C_RESET}")
             else:
                 _safe_print(f"  {C_GRAY}Not in dual-model mode.{C_RESET}")
+            continue
+
+        # Safety layer commands
+        if lower == "safety":
+            report = getattr(ops, '_last_safety_report', None)
+            _safe_print(f"\n  {C_BOLD}{C_BRIGHT_CYAN}Safety Layer{C_RESET}")
+            _safe_print(f"  Status: {'paranoid' if ops._guard.paranoid else 'normal'}")
+            _safe_print(f"  Patterns: {len(ops._guard.patterns)}")
+            _safe_print(f"  Allow-list: {len(ops._guard.allow_list)} value(s)")
+            if report:
+                _safe_print(f"  Last: {report.summary()}")
+                if report.redactions:
+                    cats = report.redacted_categories
+                    _safe_print(f"  Redacted categories: {', '.join(f'{k}={v}' for k, v in sorted(cats.items()))}")
+            else:
+                _safe_print(f"  Last: no API call yet")
+            _safe_print(f"  {C_GRAY}Tip: 'safety allow <value>' to bypass redaction for a known-safe value{C_RESET}")
+            continue
+
+        if lower.startswith("safety allow "):
+            val = user_input[13:].strip()
+            if val:
+                ops._guard.add_allow(val)
+                _safe_print(f"  {C_BRIGHT_GREEN}✓ Added to safety allow-list{C_RESET}")
+            else:
+                _safe_print(f"  {C_GRAY}Usage: safety allow <value>{C_RESET}")
             continue
 
         # Model switch

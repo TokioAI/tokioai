@@ -132,10 +132,38 @@ tokioai_cli/
 
 - 38+ tools -- bash, SSH, Docker, security scanning, IoT, robots, WAF, DNS
 - Dual-model router with cost savings tracking
+- Local safety layer -- PII/secrets redaction before any LLM API call
 - Tab completion, multi-line input, session persistence
 - Credential masking -- API keys never shown in output
 - Auto-provider detection -- uses whatever credentials are available
 - Works on any machine after setup (zero hardcoded paths)
+
+---
+
+## Security & Privacy
+
+TokioAI runs a **local safety layer** (`tokioai_cli/safety.py`) that scans **every outgoing prompt and the system prompt** for common secrets and PII before it reaches any LLM provider — including OpenRouter, Kimi/Moonshot, Gemini, OpenAI and Claude. Detected values are replaced with stable placeholders such as `[REDACTED_API_KEY_1]`. The original values never leave your machine.
+
+Detected categories include:
+- API keys (OpenAI `sk-...`, Anthropic `sk-ant-...`, OpenRouter `sk-or-v1-...`, Google `AIza...`, GitHub PATs, AWS keys)
+- Passwords and database connection strings
+- Private keys (PEM, OpenSSH, RSA, EC)
+- Emails, phone numbers, private IPv4 addresses
+- Credit cards and national IDs
+
+Commands:
+
+```
+safety              # show status and last redaction summary
+safety allow <val>  # bypass redaction for a known-safe value
+```
+
+Environment variables:
+
+- `TOKIO_SAFETY_PARANOID=1` -- raise detection sensitivity
+- `TOKIO_SAFETY_BLOCK=api_key,password` -- block the request if any value in those categories is detected
+
+This is **defence in depth**, not a guarantee. Always review code before pasting it anywhere, and rotate leaked credentials immediately.
 
 ---
 

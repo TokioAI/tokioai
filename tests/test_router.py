@@ -85,6 +85,11 @@ class TestClassifyComplexity:
         "compara las ventajas y desventajas de usar Redis vs Memcached",
         "diseña una arquitectura para un sistema de pagos distribuido",
         "cuál es la mejor manera de proteger una API contra ataques",
+        "dame una guía completa de hardening de Kubernetes",
+        "prepara un pentest plan para una red interna",
+        "crea un plan de incident response para una empresa",
+        "explica la arquitectura de zero trust",
+        "como mitigar SSRF y CVEs recientes",
     ])
     def test_complex_spanish(self, query):
         score, reason = classify_complexity(query)
@@ -229,7 +234,7 @@ class TestDualModelRouter:
         router = DualModelRouter()
         assert router.primary_model == DEFAULT_PRIMARY
         assert router.secondary_model == DEFAULT_SECONDARY
-        assert router.threshold == 50
+        assert router.threshold == 45
 
     def test_route_simple(self):
         router = DualModelRouter()
