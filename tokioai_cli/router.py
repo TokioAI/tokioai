@@ -109,13 +109,15 @@ _COMPLEX_KEYWORDS = {
     "architect", "architecture", "design pattern", "system design", "trade-off",
     "tradeoff", "scalability", "microservice", "monolith", "distributed",
     # Security deep analysis
-    "vulnerability", "exploit", "penetration", "threat model", "attack surface",
-    "zero-day", "0day", "reverse engineer", "malware", "forensic", "incident response",
-    "cve-", "privilege escalation", "lateral movement", "persistence",
+    "vulnerability", "vulnerabilities", "exploit", "penetration", "threat model",
+    "attack surface", "zero-day", "0day", "reverse engineer", "malware", "forensic",
+    "incident response", "cve-", "privilege escalation", "lateral movement",
+    "persistence", "hardening",
     # Strategy & planning
     "strategy", "roadmap", "migration plan", "refactor", "rewrite from scratch",
     "pros and cons", "compare", "versus", "which is better", "recommend",
-    "should i", "best approach", "best practice",
+    "should i", "best approach", "best practice", "production deployment",
+    "high load", "under load", "at scale",
     # Creative & complex reasoning
     "explain why", "reason about", "analyze", "deep dive", "in-depth",
     "philosophical", "ethical", "implication", "implications", "consequences",
@@ -123,7 +125,7 @@ _COMPLEX_KEYWORDS = {
     "creative", "brainstorm", "innovate", "novel approach",
     # Multi-step reasoning
     "step by step", "walk me through", "comprehensive", "thorough",
-    "full audit", "complete review", "end to end", "from scratch",
+    "full audit", "security audit", "complete review", "end to end", "from scratch",
     # Complex code tasks
     "optimize algorithm", "time complexity", "space complexity",
     "concurrency", "race condition", "deadlock", "memory leak",
@@ -155,13 +157,17 @@ _SIMPLE_KEYWORDS = {
 
 # Patterns that suggest complex multi-turn reasoning
 _COMPLEX_PATTERNS = [
-    r"\b(why|how)\b.*\b(work|fail|crash|break|slow)\b",  # "why does X fail"
-    r"\b(design|build|create|implement)\b.*\b(system|platform|framework|engine)\b",
+    r"\b(why|how)\b.*\b(work|fail|crash|break|slow|handle|manage)\b",  # "why does X fail" / "how does X handle"
+    r"\b(design|build|create|implement)\b.*\b(system|platform|framework|engine|model|gateway)\b",
     r"\b(secure|harden|protect|defend)\b.*\b(against|from)\b",
     r"\b(compare|contrast|evaluate|assess)\b",
     r"\b(what if|suppose|imagine|consider)\b",
-    r"\b(review|audit|analyze)\b.*\b(code|security|performance|infra)\b",
-    r"\bexplain\b.*\b(detail|depth|thoroughly|fully)\b",
+    r"\b(review|audit|analyze)\b.*\b(code|security|performance|infra|log|system|vulnerabilit)\b",
+    r"\b(explain|explica)\b.*\b(detail|depth|thoroughly|fully)\b",
+    r"\bin[- ]depth\b",  # "in depth" / "in-depth" anywhere
+    r"\b(threat model|attack surface)\b",
+    r"\b(ventajas y desventajas|pros y contras|mejor manera|mejor enfoque)\b",
+    r"\b(escalaci[oó]n|privilegio|c[oó]mo funciona)\b",
 ]
 
 # Patterns that suggest simple direct tasks
@@ -206,19 +212,33 @@ def classify_complexity(user_input: str, conversation_depth: int = 0,
     if question_marks >= 3:
         score += 15
         reasons.append("multi_question")
-    elif question_marks == 0 and word_count <= 10:
+    elif question_marks == 0 and word_count <= 10 and not any(
+        text.startswith(w) for w in ("how ", "why ", "what ", "explain", "compare",
+                                      "design", "analyze", "analiza", "explica",
+                                      "compara", "diseña", "evalua", "evalúa")
+    ):
         score -= 5
         reasons.append("direct_command")
 
     # ── Keyword matching ──
-    complex_hits = sum(1 for kw in _COMPLEX_KEYWORDS if kw in text)
-    simple_hits = sum(1 for kw in _SIMPLE_KEYWORDS if kw in text)
+    # Use word-boundary matching for short keywords to avoid false substring matches
+    # (e.g. "rm" matching inside "perform", "ls" matching inside "false")
+    def _kw_match(kw: str, txt: str) -> bool:
+        if len(kw) <= 3:
+            return bool(re.search(r'\b' + re.escape(kw) + r'\b', txt))
+        return kw in txt
+
+    complex_hits = sum(1 for kw in _COMPLEX_KEYWORDS if _kw_match(kw, text))
+    simple_hits = sum(1 for kw in _SIMPLE_KEYWORDS if _kw_match(kw, text))
 
     if complex_hits > 0:
         score += min(complex_hits * 15, 60)  # each complex keyword is strong signal
         reasons.append(f"complex_kw({complex_hits})")
     if simple_hits > 0:
-        score -= min(simple_hits * 7, 28)  # simple keywords are weaker signal
+        # Simple keywords carry LESS weight when complex keywords are also present
+        # (e.g. "analyze this code for vulnerabilities" has both "analyze" and "fix")
+        simple_weight = 4 if complex_hits > 0 else 7
+        score -= min(simple_hits * simple_weight, 20)
         reasons.append(f"simple_kw({simple_hits})")
 
     # ── Pattern matching ──
@@ -227,7 +247,8 @@ def classify_complexity(user_input: str, conversation_depth: int = 0,
         if re.search(pat, text, re.IGNORECASE):
             complex_pattern_hits += 1
     if complex_pattern_hits > 0:
-        score += complex_pattern_hits * 12
+        # Pattern matches are strong signals — boost more with multiple hits
+        score += complex_pattern_hits * 14
         reasons.append(f"complex_pat({complex_pattern_hits})")
 
     simple_pattern_hits = 0
@@ -287,7 +308,7 @@ class DualModelRouter:
     Routes requests between two models based on complexity analysis.
 
     Usage:
-        router = DualModelRouter(openrouter_api_key="sk-or-...")
+        router = DualModelRouter()
         model = router.route("fix this bug in line 42")  # -> K2.7-code
         model = router.route("design a microservice architecture for...")  # -> K3
     """
