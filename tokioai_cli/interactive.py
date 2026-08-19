@@ -604,7 +604,8 @@ _SENSITIVE_PATTERNS = [
     (re.compile(r'ghp_[A-Za-z0-9]{36,}'), '[GITHUB_TOKEN]'),
     (re.compile(r'gho_[A-Za-z0-9]{36,}'), '[GITHUB_TOKEN]'),
     (re.compile(r'sk-ant-[A-Za-z0-9_-]{20,}'), '[ANTHROPIC_KEY]'),
-    (re.compile(r'sk-[A-Za-z0-9]{20,}'), '[API_KEY]'),
+    (re.compile(r'sk-or-[A-Za-z0-9_-]{20,}'), '[OPENROUTER_KEY]'),
+    (re.compile(r'sk-[A-Za-z0-9_-]{20,}'), '[API_KEY]'),
     (re.compile(r'AIza[A-Za-z0-9_-]{35}'), '[GOOGLE_API_KEY]'),
     (re.compile(r'AKIA[A-Z0-9]{16}'), '[AWS_KEY]'),
     (re.compile(r'xoxb-[A-Za-z0-9\-]{20,}'), '[SLACK_TOKEN]'),
@@ -623,6 +624,98 @@ def _mask_sensitive(text: str) -> str:
     for pattern, replacement in _SENSITIVE_PATTERNS:
         text = pattern.sub(replacement, text)
     return text
+
+
+# Prefixes that COULD be the start of a sensitive pattern.
+# If the buffer ends with one of these, hold it back until more tokens arrive.
+_SENSITIVE_PREFIXES = [
+    re.compile(r'github_pat_[A-Za-z0-9_]{0,}$'),
+    re.compile(r'ghp_[A-Za-z0-9]{0,}$'),
+    re.compile(r'gho_[A-Za-z0-9]{0,}$'),
+    re.compile(r'sk-ant-[A-Za-z0-9_\-]{0,}$'),
+    re.compile(r'sk-or-[A-Za-z0-9_\-]{0,}$'),
+    re.compile(r'sk-[A-Za-z0-9_\-]{0,}$'),
+    re.compile(r'AIza[A-Za-z0-9_\-]{0,}$'),
+    re.compile(r'AKIA[A-Z0-9]{0,}$'),
+    re.compile(r'xox[bp]-[A-Za-z0-9\-]{0,}$'),
+    re.compile(r'eyJ[A-Za-z0-9_\-]{0,}$'),
+    re.compile(r'Bearer\s+[A-Za-z0-9_\-\.]{0,}$'),
+    re.compile(r'-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*$'),
+    # Partial prefix starters (just the first few chars)
+    re.compile(r'github_pa$'),
+    re.compile(r'github_p$'),
+    re.compile(r'github_$'),
+    re.compile(r'sk-an$'),
+    re.compile(r'sk-a$'),
+    re.compile(r'AIz$'),
+    re.compile(r'AKI$'),
+    re.compile(r'xox$'),
+    re.compile(r'eyJ$'),
+    re.compile(r'Beare$'),
+    re.compile(r'Bear$'),
+    # Generic: env var assignment building up (full words and partial suffixes)
+    re.compile(r'(?:PASSWORD|SECRET|TOKEN|API_KEY|PRIVATE_KEY|AUTH)\s*[=:]\s*[^\s]{0,}$', re.IGNORECASE),
+    # Partial env var name endings that could become PASSWORD, SECRET, etc.
+    re.compile(r'(?:PASSWOR|PASSWO|PASSW|PASS|SECRE|SECR|API_KE|PRIVATE_KE|PRIVATE_K|PRIVATE_)$'),
+]
+
+class SecureStreamBuffer:
+    """Buffers streaming tokens and masks sensitive data BEFORE printing.
+
+    The problem: during streaming, API keys arrive split across multiple
+    tokens (e.g. "AIzaSy" + "CzCFB04" + "QQaaup..."). Per-token masking
+    fails because no single token contains the full pattern.
+
+    Solution: accumulate tokens in a buffer. Only flush text to screen
+    when we're confident the buffer tail doesn't contain a partial
+    sensitive prefix. If it might, hold it back until more tokens arrive
+    or flush() is called at end-of-stream.
+    """
+
+    def __init__(self, write_fn):
+        self._write = write_fn
+        self._buf = ""
+        self._first = True
+
+    def add(self, token: str):
+        """Add a streaming token. Prints safe portion immediately."""
+        if self._first:
+            self._write("\n")
+            self._first = False
+        self._buf += token
+        self._flush_safe()
+
+    def _flush_safe(self):
+        """Flush as much of the buffer as is safe to print."""
+        if not self._buf:
+            return
+
+        # Check if the tail of the buffer could be a partial sensitive prefix
+        hold_from = len(self._buf)  # by default, nothing held back
+
+        # We check the last N chars (max prefix length ~60 is generous)
+        tail_check_len = min(len(self._buf), 80)
+        tail = self._buf[-tail_check_len:]
+
+        for prefix_re in _SENSITIVE_PREFIXES:
+            m = prefix_re.search(tail)
+            if m:
+                # Found a potential partial match -- hold from its start
+                abs_start = len(self._buf) - tail_check_len + m.start()
+                hold_from = min(hold_from, abs_start)
+
+        if hold_from > 0:
+            safe = self._buf[:hold_from]
+            self._buf = self._buf[hold_from:]
+            masked = _mask_sensitive(safe)
+            self._write(masked)
+
+    def flush(self):
+        """Flush everything remaining (end of stream). Mask before printing."""
+        if self._buf:
+            masked = _mask_sensitive(self._buf)
+            self._write(masked)
+            self._buf = ""
 
 
 # ═══════════════════════════════════════════════════════
@@ -1365,6 +1458,7 @@ def process_message(ops: TokioOps, user_input: str):
 
     text_already_printed = False
     streaming_buffer = []
+    secure_stream = SecureStreamBuffer(_safe_write)
 
     def on_text(text):
         nonlocal text_already_printed
@@ -1373,13 +1467,10 @@ def process_message(ops: TokioOps, user_input: str):
         text_already_printed = True
 
     def on_token(token):
-        """Stream tokens directly to stdout — raw, no markdown rendering mid-stream."""
+        """Stream tokens through SecureStreamBuffer — masks credentials even when split across tokens."""
         nonlocal text_already_printed
-        if not streaming_buffer:
-            # First token — print a newline to separate from tool output
-            _safe_write("\n")
         streaming_buffer.append(token)
-        _safe_write(_mask_sensitive(token))
+        secure_stream.add(token)
         text_already_printed = True
 
     # Use streaming for Anthropic and OpenAI, fallback for others
@@ -1395,17 +1486,20 @@ def process_message(ops: TokioOps, user_input: str):
                           stream=use_stream)
     except KeyboardInterrupt:
         if streaming_buffer:
+            secure_stream.flush()
             _safe_write("\n")
         _safe_print(f"\n  {C_BRIGHT_YELLOW}Cancelled{C_RESET}")
         return
     except Exception as e:
         if streaming_buffer:
+            secure_stream.flush()
             _safe_write("\n")
         _safe_print(f"\n  {C_BRIGHT_RED}{_ICON_FAIL} Error: {e}{C_RESET}")
         return
 
-    # End streaming line
+    # End streaming line — flush any held-back buffer (may contain partial key)
     if streaming_buffer:
+        secure_stream.flush()
         _safe_write("\n")
 
     if result and not text_already_printed:
