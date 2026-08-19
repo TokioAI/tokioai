@@ -143,7 +143,8 @@ tokioai_cli/
 
 | Repo | Description |
 |------|-------------|
-| [tokioai-website](https://github.com/TokioAI/tokioai-website) | TokioAI Security Research Inc. -- Official website. tokioia.com |
+| [tokioai-v1.8](https://github.com/TokioAI/tokioai-v1.8) | Autonomous AI Agent Framework -- Connect Claude, GPT, or Gemini to your infrastructure. 30+ tools: servers, Docker, databases, IoT, drones, WAF, cloud. Three interfaces: CLI, REST API, Telegram Bot. |
+| [tokioai-website](https://github.com/TokioAI/tokioai-website) | TokioAI Security Research Inc. -- Official website. [tokioia.com](https://tokioia.com) |
 
 ---
 
