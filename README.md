@@ -143,9 +143,7 @@ tokioai_cli/
 
 | Repo | Description |
 |------|-------------|
-| [tokionav](https://github.com/TokioAI/tokionav) | Autonomous robot navigation -- vision-guided, SLAM, sensor fusion |
-| [tokioai-agent](https://github.com/TokioAI/tokioai-agent) | Business Agent -- WhatsApp AI + Payments SaaS |
-| [tokioai-website](https://github.com/TokioAI/tokioai-website) | tokioia.com source |
+| [tokioai-website](https://github.com/TokioAI/tokioai-website) | TokioAI Security Research Inc. -- Official website. tokioia.com |
 
 ---
 
