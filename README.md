@@ -91,7 +91,7 @@ tokio -m dual          # activate at startup
 # or at runtime:
 model dual             # switch to dual router
 dual                   # show router stats
-threshold 40           # adjust routing (lower = more K3)
+threshold 50           # adjust routing (lower = more K3)
 force k2.7             # force cheap model
 force auto             # resume auto-routing
 ```

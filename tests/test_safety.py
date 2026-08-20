@@ -102,3 +102,26 @@ class TestDefaultGuardEnv:
         monkeypatch.setenv("TOKIO_SAFETY_BLOCK", "api_key,email")
         g = default_guard()
         assert g.block_categories == {"api_key", "email"}
+
+
+class TestPrefixedTokens:
+    """Tokens prefixed by env vars / export / assignment should still be detected."""
+
+    def test_github_pat_after_equals(self):
+        g = default_guard()
+        token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+        _, report = g.sanitize(f"GITHUB_PAT={token}")
+        assert report.redactions, "GitHub PAT after '=' should be redacted"
+        assert report.redactions[0].category == "api_key"
+
+    def test_openai_key_after_export(self):
+        g = default_guard()
+        token = "sk-proj-1234567890abcdef1234567890abcdef12"
+        _, report = g.sanitize(f"export OPENAI_API_KEY={token}")
+        assert any(r.category == "api_key" for r in report.redactions)
+
+    def test_aws_key_after_equals(self):
+        g = default_guard()
+        token = "AKIAIOSFODNN7EXAMPLE"
+        _, report = g.sanitize(f"AWS_ACCESS_KEY_ID={token}")
+        assert any(r.category == "api_key" for r in report.redactions)

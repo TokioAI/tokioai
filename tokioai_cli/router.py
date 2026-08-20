@@ -198,10 +198,10 @@ def classify_complexity(user_input: str, conversation_depth: int = 0,
     """
     Classify a user message as SIMPLE or COMPLEX.
 
-    Returns: (model_id, reason, score)
+    Returns: (score, reason)
       - score: 0-100 where 0=trivial, 100=extremely complex
-      - score < 50 → PRIMARY (K2.7-code)
-      - score >= 50 → SECONDARY (K3)
+      - score < threshold → PRIMARY (K2.7-code)
+      - score >= threshold → SECONDARY (K3)
     """
     text = user_input.lower().strip()
     score = 30  # baseline: neutral/slightly simple
@@ -366,7 +366,7 @@ class DualModelRouter:
         self,
         primary_model: str = DEFAULT_PRIMARY,
         secondary_model: str = DEFAULT_SECONDARY,
-        threshold: int = 45,  # score >= threshold -> secondary
+        threshold: int = 50,  # score >= threshold -> secondary
     ):
         self.primary_model = primary_model
         self.secondary_model = secondary_model

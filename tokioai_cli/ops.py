@@ -1168,13 +1168,15 @@ class TokioOps:
         # If model starts with "dual:", parse it and set up the router
         self._router = None          # DualModelRouter instance (None = single model)
         self._router_active_model = None  # which model the router picked for current turn
+        self._dual_model_string: Optional[str] = None  # original "dual:..." display string
         if isinstance(self._model, str) and self._model.startswith("dual:"):
             try:
                 from tokioai_cli.router import DualModelRouter
-                parts = self._model[5:].split("+")
+                dual_string = self._model
+                parts = dual_string[5:].split("+")
                 primary = parts[0] if len(parts) > 0 else "moonshotai/kimi-k2.7-code"
                 secondary = parts[1] if len(parts) > 1 else "moonshotai/kimi-k3"
-                threshold = int(os.getenv("DUAL_THRESHOLD", "45"))
+                threshold = int(os.getenv("DUAL_THRESHOLD", "50"))
                 self._router = DualModelRouter(
                     primary_model=primary,
                     secondary_model=secondary,
@@ -1183,6 +1185,7 @@ class TokioOps:
                 # For the actual API client, use openrouter (both models are on OpenRouter)
                 self._provider_name = "openrouter"
                 self._model = primary  # default to primary, router overrides per-request
+                self._dual_model_string = dual_string
             except Exception as e:
                 print(f"WARNING: Failed to init DualModelRouter: {e}. Using single model.")
                 self._router = None
@@ -1286,11 +1289,17 @@ class TokioOps:
 
     @property
     def model(self) -> str:
+        # In dual mode, show the original "dual:..." string instead of the primary model
+        if self._dual_model_string:
+            return self._dual_model_string
         return self._model
 
     @model.setter
     def model(self, value: str):
         self._model = value
+        # Reset dual display string when model is changed manually
+        if not (isinstance(value, str) and value.startswith("dual:")):
+            self._dual_model_string = None
 
     @property
     def provider(self) -> str:
@@ -1327,7 +1336,11 @@ class TokioOps:
         if new_provider and new_provider != self._provider_name:
             self._provider_name = new_provider
             self._client, self._client_type = init_client(new_provider)
-        self._model = new_model
+        self.model = new_model  # use setter so dual string is reset
+        # If leaving dual mode, tear down the router
+        if self._dual_model_string is None:
+            self._router = None
+            self._router_active_model = None
 
     def _extract_text(self, msg: dict) -> str:
         """Extract readable text from a message for summarization."""

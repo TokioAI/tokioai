@@ -84,37 +84,37 @@ def _build_default_patterns() -> List[SecretPattern]:
     patterns.append(SecretPattern(
         "openai_api_key",
         "api_key",
-        re.compile(r"\b(sk-(?:proj-|openai-)[a-zA-Z0-9]{32,})\b"),
+        re.compile(r"(?<![A-Za-z0-9_])(sk-(?:proj-|openai-)[a-zA-Z0-9]{32,})\b"),
     ))
     patterns.append(SecretPattern(
         "anthropic_api_key",
         "api_key",
-        re.compile(r"\b(sk-ant-api03-[a-zA-Z0-9_-]{32,})\b"),
+        re.compile(r"(?<![A-Za-z0-9_])(sk-ant-api03-[a-zA-Z0-9_-]{32,})\b"),
     ))
     patterns.append(SecretPattern(
         "openrouter_api_key",
         "api_key",
-        re.compile(r"\b(sk-or-v1-[a-zA-Z0-9_-]{48,})\b"),
+        re.compile(r"(?<![A-Za-z0-9_])(sk-or-v1-[a-zA-Z0-9_-]{48,})\b"),
     ))
     patterns.append(SecretPattern(
         "google_api_key",
         "api_key",
-        re.compile(r"\b(AIza[0-9A-Za-z_-]{35})\b"),
+        re.compile(r"(?<![A-Za-z0-9_])(AIza[0-9A-Za-z_-]{35})\b"),
     ))
     patterns.append(SecretPattern(
         "github_pat",
         "api_key",
-        re.compile(r"\b(gh[pousr]_[A-Za-z0-9_]{36,})\b"),
+        re.compile(r"(?<![A-Za-z0-9_])(gh[pousr]_[A-Za-z0-9_]{36,})\b"),
     ))
     patterns.append(SecretPattern(
         "aws_access_key",
         "api_key",
-        re.compile(r"\b((?:AKIA|ASIA|AROA|AIDA)[A-Z0-9]{16})\b"),
+        re.compile(r"(?<![A-Za-z0-9_])((?:AKIA|ASIA|AROA|AIDA)[A-Z0-9]{16})\b"),
     ))
     patterns.append(SecretPattern(
         "aws_secret_key",
         "api_key",
-        re.compile(r"\b([A-Za-z0-9/+=]{40})\b"),
+        re.compile(r"(?<![A-Za-z0-9_/+=])([A-Za-z0-9/+=]{40})\b"),
     ))
 
     # Passwords in connection strings / env vars

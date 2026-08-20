@@ -234,7 +234,7 @@ class TestDualModelRouter:
         router = DualModelRouter()
         assert router.primary_model == DEFAULT_PRIMARY
         assert router.secondary_model == DEFAULT_SECONDARY
-        assert router.threshold == 45
+        assert router.threshold == 50
 
     def test_route_simple(self):
         router = DualModelRouter()
@@ -418,3 +418,22 @@ class TestRoutingScenarios:
         k27_count = results.count(DEFAULT_PRIMARY)
         ratio = k27_count / len(queries)
         assert 0.55 <= ratio <= 0.85, f"Expected 55-85% K2.7, got {ratio*100:.0f}%"
+
+
+class TestKeywordMatchingRobustness:
+    """Regression tests for keyword matching edge cases."""
+
+    @pytest.mark.parametrize("query", [
+        "grep error in logs",
+        "docker ps",
+        "kubectl get pods",
+        "find all .py files",
+        "terraform plan",
+        "ansible-playbook deploy.yml",
+    ])
+    def test_longer_simple_keywords_route_to_k27(self, query):
+        """Keywords longer than 3 chars previously triggered a NameError bug."""
+        score, reason = classify_complexity(query)
+        model = DualModelRouter().route(query)
+        assert score < 50, f"Expected simple for '{query}', got score={score}"
+        assert model == DEFAULT_PRIMARY, f"Expected K2.7 for '{query}'"
