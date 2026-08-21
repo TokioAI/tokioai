@@ -1330,17 +1330,35 @@ class TokioOps:
         return ""
 
     @property
+    def router_badge_dual(self) -> str:
+        """High-visibility badge showing both dual models; highlights active one."""
+        if not self._router:
+            return ""
+        _reset = "\033[0m"
+        primary = self._router.primary_model
+        secondary = self._router.secondary_model
+        active = self._router_active_model or primary
+        p_badge, _, p_bg = self._router.format_badge_full(primary)
+        s_badge, _, s_bg = self._router.format_badge_full(secondary)
+        if active == primary:
+            return f"{p_bg} {p_badge} {_reset}\033[48;5;235m\033[2m/{s_badge}{_reset}"
+        else:
+            return f"\033[48;5;235m\033[2m{p_badge}/{_reset}{s_bg} {s_badge} {_reset}"
+
+    @property
     def router_badge_box(self) -> str:
         """High-visibility boxed badge for the active routed model."""
-        if self._router and self._router_active_model:
-            return self._router.format_badge_box(self._router_active_model)
+        if self._router:
+            active = self._router_active_model or self._router.primary_model
+            return self._router.format_badge_box(active)
         return ""
 
     @property
     def router_model_pretty(self) -> str:
         """Human-readable name of the active routed model."""
-        if self._router and self._router_active_model:
-            return self._router.format_model_pretty(self._router_active_model)
+        if self._router:
+            active = self._router_active_model or self._router.primary_model
+            return self._router.format_model_pretty(active)
         return self.model.split("/")[-1]
 
     @property

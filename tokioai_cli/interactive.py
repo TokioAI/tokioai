@@ -266,13 +266,13 @@ def c256(n: int) -> str:
 # ── Model visibility helpers ─────────────────────────
 
 def _model_badge_for(ops: TokioOps) -> str:
-    """Return a high-visibility badge for the active model/config."""
+    """Return a high-visibility badge for the active model/config.
+
+    In dual mode, shows both models with the active one highlighted and
+    the last-routed model clearly marked.
+    """
     if ops.is_dual_mode:
-        active = ops.router_badge_box
-        if active:
-            return active
-        # No turn yet: show generic DUAL badge
-        return "\033[48;5;57m\033[1m DUAL \033[0m"
+        return ops.router_badge_dual
     # Single-model badge
     model = ops.model
     color_fg = C_BRIGHT_CYAN
@@ -303,7 +303,7 @@ def _model_status_line(ops: TokioOps) -> str:
     """Return a one-line status: badge + model name + provider + reason."""
     parts = []
     if ops.is_dual_mode:
-        parts.append(ops.router_badge_box)
+        parts.append(ops.router_badge_dual)
         parts.append(f"{C_BRIGHT_WHITE}{ops.router_model_pretty}{C_RESET}")
         parts.append(f"{C_GRAY}via {ops.provider_display_name}{C_RESET}")
         reason = ops.router_reason
@@ -1618,8 +1618,9 @@ def process_message(ops: TokioOps, user_input: str):
         model_name = ops.router_model_pretty
         reason = ops.router_reason
         score = ops.router_score
-        reason_str = f"{C_DIM}({reason}, score={score}){C_RESET}" if reason else ""
-        parts.insert(0, f"{badge} {C_BRIGHT_WHITE}{model_name}{C_RESET} {reason_str}")
+        reason_str = f"{C_DIM}reason: {reason} • score={score}{C_RESET}" if reason else ""
+        model_line = f"{badge} {C_BRIGHT_WHITE}{model_name}{C_RESET} {reason_str}"
+        _safe_print(f"\n  {C_BRIGHT_YELLOW}▸{C_RESET} {model_line}")
 
     _safe_print(f"\n  {C_GRAY}{f' {_BOX_V} '.join(parts)}{C_RESET}")
 
