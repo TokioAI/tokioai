@@ -28,3 +28,16 @@ build/
 .DS_Store
 Thumbs.db
 tokioai_cli/ops.py.bak.openrouter
+
+# Demos / media / recordings
+demos/
+demo_terminal*.py
+*.cast
+*.gif
+*.mp4
+*.mov
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.log

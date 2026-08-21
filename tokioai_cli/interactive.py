@@ -1344,13 +1344,27 @@ def show_banner(model: str, provider: str, mode_parts: list[str] | None = None):
 
     mode_str = " + ".join(mode_parts) if mode_parts else "Interactive"
 
+    provider_pretty = {
+        "openrouter": "OpenRouter",
+        "anthropic-vertex": "Vertex AI (Claude)",
+        "claude-vertex": "Vertex AI (Claude)",
+        "vertex": "Vertex AI",
+        "anthropic": "Anthropic",
+        "openai": "OpenAI",
+        "gemini": "Gemini",
+        "gemini-vertex": "Vertex AI (Gemini)",
+        "kimi": "Moonshot AI",
+        "moonshot": "Moonshot AI",
+        "ollama": "Ollama",
+    }.get(provider, provider)
+
     _safe_print(f"    {C_BOLD}{C_BRIGHT_WHITE}  TokioAI{C_RESET} {C_GRAY}v5.2{C_RESET}")
     if model.startswith("dual:"):
         parts = model[5:].split("+")
         p_name = parts[0].split("/")[-1] if parts else "?"
         s_name = parts[1].split("/")[-1] if len(parts) > 1 else "?"
         dual_badge = f"\033[48;5;57m\033[1m DUAL \033[0m"
-        _safe_print(f"    {dual_badge}  \033[48;5;22m\033[1m {p_name} \033[0m {C_GRAY}+ \033[48;5;94m\033[1m {s_name} \033[0m {C_GRAY}via {provider} • {mode_str}{C_RESET}")
+        _safe_print(f"    {dual_badge}  \033[48;5;22m\033[1m {p_name} \033[0m {C_GRAY}+ \033[48;5;94m\033[1m {s_name} \033[0m {C_GRAY}via {provider_pretty} • {mode_str}{C_RESET}")
     else:
         # Single-model banner badge
         color_bg = "\033[48;5;24m\033[1m"
@@ -1367,7 +1381,7 @@ def show_banner(model: str, provider: str, mode_parts: list[str] | None = None):
         elif "gemini" in model:
             color_bg = "\033[48;5;31m\033[1m"
         short = model.split("/")[-1][:18]
-        _safe_print(f"    {color_bg} {short} \033[0m {C_GRAY}via {provider} • {mode_str}{C_RESET}")
+        _safe_print(f"    {color_bg} {short} \033[0m {C_GRAY}via {provider_pretty} • {mode_str}{C_RESET}")
     _safe_print()
     _safe_print(f"    {C_GRAY}  Type {C_BRIGHT_CYAN}?{C_GRAY} for help • {C_BRIGHT_YELLOW}Tab{C_GRAY} to complete • {C_BRIGHT_YELLOW}Ctrl+C{C_GRAY} to cancel{C_RESET}")
     _safe_print()
@@ -1663,6 +1677,10 @@ def run_interactive(
 
     current_provider = provider_override or PROVIDER
     current_model = model_override or MODEL
+
+    # Dual mode always routes through OpenRouter, so fix provider display
+    if isinstance(current_model, str) and current_model.startswith("dual:"):
+        current_provider = "openrouter"
 
     # Validate minimum config
     if current_provider in ("anthropic-vertex", "claude-vertex", "vertex") and not VERTEX_PROJECT:
