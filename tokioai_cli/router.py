@@ -23,6 +23,9 @@ from typing import Optional
 DEFAULT_PRIMARY = "moonshotai/kimi-k2.7-code"     # cheap, fast, code-focused
 DEFAULT_SECONDARY = "moonshotai/kimi-k3"           # expensive, smart, reasoning
 
+# ANSI reset (kept local to avoid cross-module dependency)
+C_RESET = "\033[0m"
+
 # ── Pricing per million tokens ──
 PRICING = {
     "moonshotai/kimi-k2.7-code": {"input": 0.71, "output": 3.50},
@@ -410,20 +413,27 @@ class DualModelRouter:
     def format_stats(self) -> str:
         """Format router statistics for display."""
         s = self.stats
+        p_short = s.primary_model.split("/")[-1]
+        s_short = s.secondary_model.split("/")[-1]
         lines = []
-        lines.append(f"Dual Router: {s.primary_model.split('/')[-1]} + {s.secondary_model.split('/')[-1]}")
-        lines.append(f"  Threshold: score >= {self.threshold} -> {s.secondary_model.split('/')[-1]}")
+        lines.append(f"Dual Router: {p_short} + {s_short}")
+        lines.append(f"  Threshold: score >= {self.threshold} -> {s_short}")
         lines.append(f"  Total calls: {s.total_calls}")
         if s.total_calls > 0:
-            lines.append(f"  K2.7-code: {s.primary_calls} ({s.primary_ratio*100:.0f}%) | ${s.primary_cost:.4f}")
-            lines.append(f"  K3:        {s.secondary_calls} ({(1-s.primary_ratio)*100:.0f}%) | ${s.secondary_cost:.4f}")
+            p_pct = s.primary_ratio * 100
+            s_pct = (1 - s.primary_ratio) * 100
+            lines.append(f"  {self.format_badge_box(s.primary_model)} {p_pct:.0f}% | ${s.primary_cost:.4f}")
+            lines.append(f"  {self.format_badge_box(s.secondary_model)} {s_pct:.0f}% | ${s.secondary_cost:.4f}")
             lines.append(f"  Total cost: ${s.total_cost:.4f}")
             if s.savings_estimate > 0:
                 lines.append(f"  Savings vs all-K3: ${s.savings_estimate:.4f}")
         if s.last_decisions:
             lines.append(f"  Last decisions:")
             for d in s.last_decisions[-5:]:
-                lines.append(f"    [{d['time']}] {d['model']} (score={d['score']}) {d['query'][:50]}")
+                badge, _, bg = self.format_badge_full(
+                    s.primary_model if d["model"] == "K2.7" else s.secondary_model
+                )
+                lines.append(f"    [{d['time']}] {bg} {badge} {C_RESET} (score={d['score']}) {d['query'][:50]}")
         return "\n".join(lines)
 
     def format_badge(self, model: str) -> str:
@@ -434,3 +444,54 @@ class DualModelRouter:
             return "K3"
         else:
             return model.split("/")[-1]
+
+    def format_badge_full(self, model: str) -> tuple[str, str, str]:
+        """Return (badge_text, fg_color, bg_style) for a model.
+
+        fg_color is a 256-color ANSI foreground.
+        bg_style is a background+reverse+bold combo for high visibility.
+        """
+        if model == self.primary_model:
+            return (
+                "K2.7",
+                "\033[38;5;82m",   # bright green
+                "\033[48;5;22m\033[1m",  # dark green bg + bold
+            )
+        elif model == self.secondary_model:
+            return (
+                "K3",
+                "\033[38;5;220m",  # gold/yellow
+                "\033[48;5;94m\033[1m",   # brown/ochre bg + bold
+            )
+        else:
+            short = model.split("/")[-1][:12]
+            return (
+                short,
+                "\033[38;5;45m",   # cyan
+                "\033[48;5;24m\033[1m",   # dark cyan bg + bold
+            )
+
+    def format_badge_box(self, model: str) -> str:
+        """High-visibility boxed badge with colored background."""
+        badge, _, bg = self.format_badge_full(model)
+        return f"{bg} {badge} {C_RESET}"
+
+    def format_model_pretty(self, model: str) -> str:
+        """Return a human-readable short name for a model."""
+        if model == self.primary_model:
+            return "Kimi K2.7-code"
+        elif model == self.secondary_model:
+            return "Kimi K3"
+        short = model.split("/")[-1]
+        return short
+
+    def last_decision(self) -> Optional[dict]:
+        """Return the most recent routing decision, if any."""
+        if self.stats.last_decisions:
+            return self.stats.last_decisions[-1]
+        return None
+
+    def last_reason(self) -> str:
+        """Return the reason for the last routing decision."""
+        d = self.last_decision()
+        return d.get("reason", "") if d else ""

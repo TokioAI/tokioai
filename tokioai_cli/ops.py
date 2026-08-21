@@ -1168,6 +1168,8 @@ class TokioOps:
         # If model starts with "dual:", parse it and set up the router
         self._router = None          # DualModelRouter instance (None = single model)
         self._router_active_model = None  # which model the router picked for current turn
+        self._router_reason = ""      # why the router chose that model
+        self._router_score = 0        # complexity score for last routing decision
         self._dual_model_string: Optional[str] = None  # original "dual:..." display string
         if isinstance(self._model, str) and self._model.startswith("dual:"):
             try:
@@ -1326,6 +1328,55 @@ class TokioOps:
         if self._router and self._router_active_model:
             return self._router.format_badge(self._router_active_model)
         return ""
+
+    @property
+    def router_badge_box(self) -> str:
+        """High-visibility boxed badge for the active routed model."""
+        if self._router and self._router_active_model:
+            return self._router.format_badge_box(self._router_active_model)
+        return ""
+
+    @property
+    def router_model_pretty(self) -> str:
+        """Human-readable name of the active routed model."""
+        if self._router and self._router_active_model:
+            return self._router.format_model_pretty(self._router_active_model)
+        return self.model.split("/")[-1]
+
+    @property
+    def model_display_name(self) -> str:
+        """User-friendly model name for the current config."""
+        if self._dual_model_string:
+            return "Dual Router (K2.7 + K3)"
+        return self.model.split("/")[-1]
+
+    @property
+    def provider_display_name(self) -> str:
+        """User-friendly provider name."""
+        mapping = {
+            "anthropic-vertex": "Vertex AI (Claude)",
+            "claude-vertex": "Vertex AI (Claude)",
+            "vertex": "Vertex AI",
+            "anthropic": "Anthropic",
+            "openai": "OpenAI",
+            "gemini": "Gemini",
+            "gemini-vertex": "Vertex AI (Gemini)",
+            "kimi": "Moonshot AI",
+            "moonshot": "Moonshot AI",
+            "openrouter": "OpenRouter",
+            "ollama": "Ollama",
+        }
+        return mapping.get(self._provider_name, self._provider_name)
+
+    @property
+    def router_reason(self) -> str:
+        """Why the router chose the active model."""
+        return self._router_reason or ""
+
+    @property
+    def router_score(self) -> int:
+        """Complexity score for the last routing decision."""
+        return self._router_score or 0
 
     @property
     def token_usage_str(self) -> str:
@@ -1636,6 +1687,14 @@ class TokioOps:
                 has_tool_results=has_tool,
             )
             self._router_active_model = routed_model
+            # Capture routing reason/score for display
+            last_dec = self._router.last_decision()
+            if last_dec:
+                self._router_reason = last_dec.get("reason", "")
+                self._router_score = last_dec.get("score", 0)
+            else:
+                self._router_reason = ""
+                self._router_score = 0
             # Temporarily set the model for this request
             saved_model = self._model
             self._model = routed_model

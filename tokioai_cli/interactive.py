@@ -254,6 +254,7 @@ C_BRIGHT_RED = "\033[91m"
 C_BRIGHT_GREEN = "\033[92m"
 C_BRIGHT_YELLOW = "\033[93m"
 C_BRIGHT_BLUE = "\033[94m"
+C_BRIGHT_MAGENTA = "\033[95m"
 C_BRIGHT_CYAN = "\033[96m"
 C_BRIGHT_WHITE = "\033[97m"
 C_CLEAR_LINE = "\033[2K\033[G"
@@ -261,6 +262,65 @@ C_BG_GRAY = "\033[48;5;236m"
 
 def c256(n: int) -> str:
     return f"\033[38;5;{n}m"
+
+# ── Model visibility helpers ─────────────────────────
+
+def _model_badge_for(ops: TokioOps) -> str:
+    """Return a high-visibility badge for the active model/config."""
+    if ops.is_dual_mode:
+        active = ops.router_badge_box
+        if active:
+            return active
+        # No turn yet: show generic DUAL badge
+        return "\033[48;5;57m\033[1m DUAL \033[0m"
+    # Single-model badge
+    model = ops.model
+    color_fg = C_BRIGHT_CYAN
+    color_bg = "\033[48;5;24m\033[1m"
+    if "kimi-k3" in model or model == "moonshotai/kimi-k3":
+        color_fg = C_BRIGHT_YELLOW
+        color_bg = "\033[48;5;94m\033[1m"
+    elif "kimi" in model or "moonshot" in model:
+        color_fg = C_BRIGHT_GREEN
+        color_bg = "\033[48;5;22m\033[1m"
+    elif "claude-opus" in model or "opus" in model:
+        color_fg = C_BRIGHT_MAGENTA
+        color_bg = "\033[48;5;53m\033[1m"
+    elif "claude-sonnet" in model or "sonnet" in model:
+        color_fg = C_BRIGHT_BLUE
+        color_bg = "\033[48;5;25m\033[1m"
+    elif "gpt" in model or model in ("o1", "o3", "o3-mini"):
+        color_fg = C_BRIGHT_GREEN
+        color_bg = "\033[48;5;28m\033[1m"
+    elif "gemini" in model:
+        color_fg = C_BRIGHT_CYAN
+        color_bg = "\033[48;5;31m\033[1m"
+    short = model.split("/")[-1][:14]
+    return f"{color_bg} {short} {C_RESET}"
+
+
+def _model_status_line(ops: TokioOps) -> str:
+    """Return a one-line status: badge + model name + provider + reason."""
+    parts = []
+    if ops.is_dual_mode:
+        parts.append(ops.router_badge_box)
+        parts.append(f"{C_BRIGHT_WHITE}{ops.router_model_pretty}{C_RESET}")
+        parts.append(f"{C_GRAY}via {ops.provider_display_name}{C_RESET}")
+        reason = ops.router_reason
+        if reason:
+            parts.append(f"{C_DIM}reason: {reason}{C_RESET}")
+    else:
+        parts.append(_model_badge_for(ops))
+        parts.append(f"{C_BRIGHT_WHITE}{ops.model_display_name}{C_RESET}")
+        parts.append(f"{C_GRAY}via {ops.provider_display_name}{C_RESET}")
+    return " ".join(parts)
+
+
+def _build_prompt(ops: TokioOps) -> str:
+    """Build the interactive prompt showing the active model badge."""
+    badge = _model_badge_for(ops)
+    return f"\n{RL_START}{badge} {C_BOLD}{C_BRIGHT_CYAN}{RL_END}{_PROMPT_CHAR}{RL_START}{C_RESET}{RL_END} "
+
 
 # Safe line characters — Windows CMD with old codepage can't render box-drawing
 _LINE_H = "-" if _IS_WINDOWS else "━"
@@ -1289,9 +1349,25 @@ def show_banner(model: str, provider: str, mode_parts: list[str] | None = None):
         parts = model[5:].split("+")
         p_name = parts[0].split("/")[-1] if parts else "?"
         s_name = parts[1].split("/")[-1] if len(parts) > 1 else "?"
-        _safe_print(f"    {C_BRIGHT_GREEN}  {p_name}{C_GRAY} + {C_BRIGHT_YELLOW}{s_name}{C_GRAY} via {provider} • {mode_str} • {C_BRIGHT_CYAN}DUAL ROUTER{C_RESET}")
+        dual_badge = f"\033[48;5;57m\033[1m DUAL \033[0m"
+        _safe_print(f"    {dual_badge}  \033[48;5;22m\033[1m {p_name} \033[0m {C_GRAY}+ \033[48;5;94m\033[1m {s_name} \033[0m {C_GRAY}via {provider} • {mode_str}{C_RESET}")
     else:
-        _safe_print(f"    {C_GRAY}  {model} via {provider} • {mode_str}{C_RESET}")
+        # Single-model banner badge
+        color_bg = "\033[48;5;24m\033[1m"
+        if "kimi-k3" in model:
+            color_bg = "\033[48;5;94m\033[1m"
+        elif "kimi" in model or "moonshot" in model:
+            color_bg = "\033[48;5;22m\033[1m"
+        elif "claude-opus" in model or "opus" in model:
+            color_bg = "\033[48;5;53m\033[1m"
+        elif "claude-sonnet" in model or "sonnet" in model:
+            color_bg = "\033[48;5;25m\033[1m"
+        elif "gpt" in model or model in ("o1", "o3", "o3-mini"):
+            color_bg = "\033[48;5;28m\033[1m"
+        elif "gemini" in model:
+            color_bg = "\033[48;5;31m\033[1m"
+        short = model.split("/")[-1][:18]
+        _safe_print(f"    {color_bg} {short} \033[0m {C_GRAY}via {provider} • {mode_str}{C_RESET}")
     _safe_print()
     _safe_print(f"    {C_GRAY}  Type {C_BRIGHT_CYAN}?{C_GRAY} for help • {C_BRIGHT_YELLOW}Tab{C_GRAY} to complete • {C_BRIGHT_YELLOW}Ctrl+C{C_GRAY} to cancel{C_RESET}")
     _safe_print()
@@ -1538,9 +1614,12 @@ def process_message(ops: TokioOps, user_input: str):
 
     # Show which model was used in dual mode
     if ops.is_dual_mode:
-        badge = ops.router_badge
-        badge_color = C_BRIGHT_GREEN if badge == "K2.7" else C_BRIGHT_YELLOW
-        parts.insert(0, f"{badge_color}[{badge}]{C_GRAY}")
+        badge = ops.router_badge_box
+        model_name = ops.router_model_pretty
+        reason = ops.router_reason
+        score = ops.router_score
+        reason_str = f"{C_DIM}({reason}, score={score}){C_RESET}" if reason else ""
+        parts.insert(0, f"{badge} {C_BRIGHT_WHITE}{model_name}{C_RESET} {reason_str}")
 
     _safe_print(f"\n  {C_GRAY}{f' {_BOX_V} '.join(parts)}{C_RESET}")
 
@@ -1672,7 +1751,7 @@ def run_interactive(
         _flush_stdin()
 
         try:
-            prompt = f"\n{RL_START}{C_BOLD}{C_BRIGHT_CYAN}{RL_END}{_PROMPT_CHAR}{RL_START}{C_RESET}{RL_END} "
+            prompt = _build_prompt(ops)
             user_input = input(prompt).strip()
         except KeyboardInterrupt:
             # Ctrl+C at prompt: cancel current input, NOT exit session
@@ -1758,7 +1837,7 @@ def run_interactive(
                 _safe_print(f"  Secondary: {C_BRIGHT_YELLOW}{ops.router.secondary_model}{C_RESET}")
                 _safe_print(f"  Threshold: score >= {ops.router.threshold} -> secondary")
             else:
-                _safe_print(f"  Model:     {C_BOLD}{ops.model}{C_RESET}")
+                _safe_print(f"  Model:     {_model_status_line(ops)}")
             _safe_print(f"  Provider:  {ops.provider}")
             est = ops._estimate_tokens() if hasattr(ops, '_estimate_tokens') else 0
             _safe_print(f"  Messages:  {len(ops._messages)} (~{est:,} tokens, compacted {ops._compaction_count}x)")
@@ -1775,15 +1854,19 @@ def run_interactive(
                 rs = ops.router.stats
                 if rs.total_calls > 0:
                     _safe_print(f"\n  {C_BOLD}Router Stats:{C_RESET}")
-                    _safe_print(f"    K2.7-code: {rs.primary_calls} calls ({rs.primary_ratio*100:.0f}%) = ${rs.primary_cost:.4f}")
-                    _safe_print(f"    K3:        {rs.secondary_calls} calls ({(1-rs.primary_ratio)*100:.0f}%) = ${rs.secondary_cost:.4f}")
+                    p_badge = ops.router.format_badge_box(rs.primary_model)
+                    s_badge = ops.router.format_badge_box(rs.secondary_model)
+                    _safe_print(f"    {p_badge} {rs.primary_calls} calls ({rs.primary_ratio*100:.0f}%) = ${rs.primary_cost:.4f}")
+                    _safe_print(f"    {s_badge} {rs.secondary_calls} calls ({(1-rs.primary_ratio)*100:.0f}%) = ${rs.secondary_cost:.4f}")
                     if rs.savings_estimate > 0:
                         _safe_print(f"    {C_BRIGHT_GREEN}Saved: ${rs.savings_estimate:.4f} vs all-K3{C_RESET}")
                     if rs.last_decisions:
                         _safe_print(f"\n  {C_BOLD}Recent routing:{C_RESET}")
                         for d in rs.last_decisions[-5:]:
-                            color = C_BRIGHT_GREEN if d["model"] == "K2.7" else C_BRIGHT_YELLOW
-                            _safe_print(f"    [{d['time']}] {color}{d['model']}{C_RESET} (score={d['score']}) {C_GRAY}{d['query'][:45]}{C_RESET}")
+                            badge, _, bg = ops.router.format_badge_full(
+                                rs.primary_model if d["model"] == "K2.7" else rs.secondary_model
+                            )
+                            _safe_print(f"    [{d['time']}] {bg} {badge} {C_RESET} (score={d['score']}) {C_GRAY}{d['query'][:45]}{C_RESET}")
             _safe_print(f"  {C_BOLD}{C_BRIGHT_CYAN}{_LINE_THIN * w}{C_RESET}\n")
             continue
 
@@ -1792,6 +1875,8 @@ def run_interactive(
             if not ops.is_dual_mode:
                 _safe_print(f"  {C_GRAY}Not in dual-model mode. Switch with: model dual{C_RESET}")
             else:
+                _safe_print(f"\n  {C_BOLD}{C_BRIGHT_YELLOW}Dual-Model Router{C_RESET}")
+                _safe_print(f"  {_model_status_line(ops)}")
                 _safe_print(f"\n{ops.router.format_stats()}")
             continue
 
@@ -1856,7 +1941,9 @@ def run_interactive(
 
         # Model switch
         if lower == "model":
-            _safe_print(f"\n  {C_BRIGHT_CYAN}🧠{C_RESET} {ops.model} ({ops.provider})")
+            _safe_print(f"\n  {_model_status_line(ops)}")
+            if ops.is_dual_mode:
+                _safe_print(f"  {C_GRAY}Mode: dual-router auto | threshold={ops.router.threshold} | force: 'force k2.7' / 'force k3' / 'force auto'{C_RESET}")
             _safe_print(f"  {C_GRAY}Switch: model <name>  |  List: models{C_RESET}")
             continue
 
@@ -1884,7 +1971,9 @@ def run_interactive(
                     parts = new_model[5:].split("+")
                     p_name = parts[0].split("/")[-1] if parts else "?"
                     s_name = parts[1].split("/")[-1] if len(parts) > 1 else "?"
-                    _safe_print(f"  {C_BRIGHT_GREEN}OK{C_RESET} {old_model} -> {C_BRIGHT_GREEN}{p_name}{C_RESET} + {C_BRIGHT_YELLOW}{s_name}{C_RESET} (DUAL ROUTER)")
+                    p_badge = "\033[48;5;22m\033[1m K2.7 \033[0m"
+                    s_badge = "\033[48;5;94m\033[1m K3 \033[0m"
+                    _safe_print(f"  {C_BRIGHT_GREEN}OK{C_RESET} {old_model} -> {p_badge} + {s_badge} {C_GRAY}(DUAL ROUTER){C_RESET}")
                     _safe_print(f"  {C_GRAY}Auto-routes: simple -> K2.7-code, complex -> K3{C_RESET}")
                     _safe_print(f"  {C_GRAY}Commands: dual (stats), threshold N, force k2.7/k3/auto{C_RESET}")
                 except Exception as e:
