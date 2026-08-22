@@ -225,6 +225,7 @@ from tokioai_cli.ops import (
     MODEL_ALIASES, resolve_model, list_aliases, detect_provider,
     SSH_RASPI, SSH_GCP, RASPI_IP, RASPI_TS, GCP_IP, GCP_USER, ROUTER_IP, RASPI_USER,
 )
+from tokioai_cli.memory_optimizer import get_memory_stats
 
 # ═══════════════════════════════════════════════════════
 # Enable ANSI on Windows
@@ -1276,6 +1277,23 @@ def _slash_commit():
     _safe_print()
 
 
+def _slash_memstats():
+    """Show memory optimization statistics."""
+    _safe_print(f"\n  {C_BOLD}Memory Optimization Stats{C_RESET}\n")
+    try:
+        stats = get_memory_stats()
+        _safe_print(f"  Total sections:     {stats['total_sections']}")
+        _safe_print(f"  Hot (in prompt):    {stats['hot_sections']}")
+        _safe_print(f"  Cold (archived):    {stats['cold_sections']}")
+        _safe_print(f"  Original size:      {stats['total_chars']:,} chars (~{stats['total_chars']//4:,} tokens)")
+        _safe_print(f"  Optimized size:     {stats['optimized_chars']:,} chars (~{stats['optimized_chars']//4:,} tokens)")
+        _safe_print(f"  {C_BRIGHT_GREEN}Reduction:          {stats['reduction_pct']:.0f}%{C_RESET}")
+        _safe_print(f"\n  {C_DIM}Old entries archived to: ~/.tokioai/memory_archive.md{C_RESET}")
+    except Exception as e:
+        _safe_print(f"  {C_BRIGHT_RED}Error: {e}{C_RESET}")
+    _safe_print()
+
+
 def _slash_branch():
     """Show current git branch and recent commits."""
     _safe_print(f"\n  {C_BOLD}Git Branch{C_RESET}\n")
@@ -1318,6 +1336,7 @@ _SLASH_COMMANDS = {
     "/diff": _slash_diff,
     "/commit": _slash_commit,
     "/branch": _slash_branch,
+    "/memstats": _slash_memstats,
 }
 
 

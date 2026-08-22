@@ -18,6 +18,7 @@ import time
 from typing import Optional, Callable
 
 from tokioai_cli import safety as _safety
+from tokioai_cli.memory_optimizer import build_optimized_context, get_memory_stats
 
 # ---------------------------------------------------------------------------
 # Model aliases — human-friendly names → real model IDs
@@ -301,32 +302,27 @@ def _save_tasks(tasks: list):
         f.write(json.dumps(tasks, indent=2, ensure_ascii=False))
 
 def _build_memory_context() -> str:
-    """Build rich context from memory and tasks -- injected into system prompt on EVERY turn."""
-    parts = []
-    mem = _load_memory()
-    if mem:
-        parts.append("\n\n## Persistent Memory (~/.tokioai/memory.md)\n" + mem)
-    tasks = _load_tasks()
-    active = [t for t in tasks if t.get("status") != "done"]
-    if active:
-        tlines = []
-        for t in active[-10:]:
-            status = t.get("status", "pending")
-            icon = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]", "blocked": "[!]"}.get(status, "[ ]")
-            line = "%s #%s: %s (%s)" % (icon, t.get("id", "?"), t.get("task", "?"), status)
-            if t.get("plan"):
-                line += "\n    Plan: " + t["plan"]
-            if t.get("current_step"):
-                line += "\n    >>> CURRENT STEP: " + t["current_step"]
-            if t.get("steps_done"):
-                line += "\n    Done: " + ", ".join(t["steps_done"][-5:])
-            if t.get("notes"):
-                line += "\n    Last note: " + str(t["notes"][-1])
-            tlines.append(line)
-        parts.append("\n\n## Active Tasks (~/.tokioai/tasks.json)\n"
-                     "IMPORTANT: Check these tasks. Update current_step as you progress.\n"
-                     + "\n".join(tlines))
-    return "".join(parts)
+    """Build OPTIMIZED context from memory and tasks -- injected into system prompt on EVERY turn.
+    
+    Uses memory_optimizer to reduce token spend by 60-80% while preserving
+    critical context. Old/irrelevant entries are archived, not sent.
+    """
+    # Import here to get the CURRENT module (allows test patching)
+    import sys
+    ops_module = sys.modules[__name__]
+    
+    import tokioai_cli.memory_optimizer as mem_opt
+    # Read from ops module namespace to allow test patching
+    mem_opt._MEMORY_FILE_OVERRIDE = getattr(ops_module, 'MEMORY_FILE', mem_opt.MEMORY_FILE)
+    mem_opt._TASKS_FILE_OVERRIDE = getattr(ops_module, 'TASKS_FILE', mem_opt.TASKS_FILE)
+    
+    # Use optimized context (capped at ~1500 tokens instead of ~12000)
+    optimized = build_optimized_context()
+    
+    if not optimized:
+        return ""
+    
+    return "\n\n" + optimized
 
 # ---------------------------------------------------------------------------
 # System prompt — TokioAI personality
@@ -1138,10 +1134,11 @@ class TokioOps:
     """TokioAI Operations engine with native tool use."""
 
     # Auto-compact: triggers on message count OR estimated token size
-    COMPACT_THRESHOLD = 40        # keep more context before compacting
-    COMPACT_KEEP_RECENT = 16      # keep last N messages intact
-    COMPACT_TOKEN_LIMIT = 100000  # compact if estimated tokens exceed this
-    MAX_TOOL_RESULT = 12000       # truncate tool results beyond this
+    # OPTIMIZED: Lower thresholds = less context = cheaper turns
+    COMPACT_THRESHOLD = 25        # was 40 — compact sooner
+    COMPACT_KEEP_RECENT = 10      # was 16 — keep fewer messages
+    COMPACT_TOKEN_LIMIT = 40000   # was 100000 — compact at 40k tokens (not 100k)
+    MAX_TOOL_RESULT = 8000        # was 12000 — truncate tool results harder
     # Cheap model for summarization (Sonnet = ~5x cheaper than Opus)
     COMPACT_MODEL = "claude-sonnet-4-20250514"
 
