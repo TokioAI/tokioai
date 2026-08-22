@@ -1294,6 +1294,29 @@ def _slash_memstats():
     _safe_print()
 
 
+def _slash_recall(query: str = ""):
+    """Recall a memory entry by topic. Shows full section and offers to inject it."""
+    if not query.strip():
+        _safe_print(f"\n  {C_DIM}Usage: /recall <topic>   (e.g. /recall picar v9){C_RESET}\n")
+        return
+    try:
+        from tokioai_cli.memory_optimizer import search_memory
+        results = search_memory(query, max_results=3)
+        if not results:
+            _safe_print(f"\n  {C_DIM}No memory entries matching '{query}'.{C_RESET}\n")
+            return
+        _safe_print(f"\n  {C_BOLD}Found {len(results)} matching entr{'y' if len(results)==1 else 'ies'}:{C_RESET}\n")
+        for i, s in enumerate(results, 1):
+            date_str = s["date"].strftime("%Y-%m-%d") if s["date"] else "no-date"
+            title = s["title"] or "(untitled)"
+            preview = s["body"][:120].replace("\n", " ")
+            _safe_print(f"  {C_BRIGHT_CYAN}[{i}]{C_RESET} {C_BOLD}{title}{C_RESET} ({date_str})")
+            _safe_print(f"      {C_DIM}{preview}...{C_RESET}\n")
+        _safe_print(f"  {C_DIM}Tokio will use this automatically if relevant. To force-inject into context, just ask: 'remember what we did with {query}'.{C_RESET}\n")
+    except Exception as e:
+        _safe_print(f"  {C_BRIGHT_RED}Error: {e}{C_RESET}\n")
+
+
 def _slash_branch():
     """Show current git branch and recent commits."""
     _safe_print(f"\n  {C_BOLD}Git Branch{C_RESET}\n")
@@ -1337,6 +1360,7 @@ _SLASH_COMMANDS = {
     "/commit": _slash_commit,
     "/branch": _slash_branch,
     "/memstats": _slash_memstats,
+    "/recall": _slash_recall,
 }
 
 
@@ -2147,9 +2171,19 @@ def run_interactive(
             _safe_print(f"  {C_BRIGHT_GREEN}✓ Stopped. Normal mode.{C_RESET}")
             continue
 
-        # ── Slash commands ──
-        if lower in _SLASH_COMMANDS:
-            _SLASH_COMMANDS[lower]()
+        # ── Slash commands (with optional argument) ──
+        _slash_handled = False
+        for _cmd_prefix, _cmd_fn in _SLASH_COMMANDS.items():
+            if lower == _cmd_prefix or lower.startswith(_cmd_prefix + " "):
+                _cmd_arg = lower[len(_cmd_prefix):].strip()
+                # Commands that accept an argument
+                if _cmd_prefix in ("/recall",):
+                    _cmd_fn(_cmd_arg)
+                else:
+                    _cmd_fn()
+                _slash_handled = True
+                break
+        if _slash_handled:
             continue
 
         # ── Process with AI ──

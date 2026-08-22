@@ -220,6 +220,93 @@ def get_memory_stats() -> Dict:
 
 
 # ─────────────────────────────────────────────────────────────
+# AUTO-RECALL — index + on-demand retrieval
+# ─────────────────────────────────────────────────────────────
+
+# Max lines in the cold index (keep it cheap)
+MAX_INDEX_LINES = 40
+
+def build_cold_index() -> str:
+    """Build a 1-line-per-section index of COLD (not-in-prompt) memory.
+    ~15 tokens per line. Lets the model know what else exists and fetch it on demand.
+    Only indexes sections NOT already in hot context (no duplication).
+    """
+    sections = _parse_memory_sections()
+    if not sections:
+        return ""
+    
+    # Recompute hot/cold split (same logic as optimize_memory)
+    sections.sort(key=lambda x: (-x["score"], x["date"] or datetime.min))
+    cold = []
+    current_chars = 0
+    for s in sections:
+        is_hot = (s["score"] >= 70 or 
+                  (s["date"] and (datetime.now() - s["date"]).days <= HOT_MEMORY_DAYS))
+        if is_hot and current_chars + s["chars"] <= MAX_MEMORY_CHARS:
+            current_chars += s["chars"]
+        else:
+            cold.append(s)
+    
+    if not cold:
+        return ""
+    
+    lines = ["## Memory Index (older entries on disk — fetch full text with search_files on ~/.tokioai/memory.md if needed)"]
+    seen = set()
+    count = 0
+    for s in cold:
+        date_str = s["date"].strftime("%Y-%m-%d") if s["date"] else "?"
+        title = s["title"].strip()
+        # Clean title: strip leading ##, duplicate date prefix/suffix
+        title = re.sub(r'^#+\s*', '', title)
+        title = re.sub(r'^\d{4}-\d{2}-\d{2}\s*[-—:]?\s*', '', title)
+        title = re.sub(r'\s*[-—(]*\s*\d{4}-\d{2}-\d{2}[\s)]*$', '', title).strip()
+        if not title or title == date_str:
+            title = (s["body"].split("\n")[0][:50] or "(note)").strip()
+            title = re.sub(r'^#+\s*', '', title)
+        if len(title) > 55:
+            title = title[:55] + "..."
+        key = title.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"- [{date_str}] {title}")
+        count += 1
+        if count >= MAX_INDEX_LINES:
+            lines.append(f"- ...({len(cold) - count} more on disk)")
+            break
+    
+    return "\n".join(lines)
+
+
+def search_memory(query: str, max_results: int = 3) -> List[Dict]:
+    """Search memory sections matching a query. Returns full sections.
+    Used by /recall command and available for the model via tools.
+    """
+    if not query or not query.strip():
+        return []
+    
+    sections = _parse_memory_sections()
+    if not sections:
+        return []
+    
+    query_lower = query.lower().strip()
+    terms = [t for t in re.split(r'\s+', query_lower) if len(t) > 1]
+    
+    scored = []
+    for s in sections:
+        text = (s["title"] + "\n" + s["body"]).lower()
+        # Score: count matching terms, bonus for title match
+        hits = sum(1 for t in terms if t in text)
+        title_hits = sum(1 for t in terms if t in s["title"].lower())
+        score = hits + (title_hits * 3)
+        if score > 0:
+            scored.append((score, s))
+    
+    scored.sort(key=lambda x: -x[0])
+    return [s for score, s in scored[:max_results]]
+
+
+# ─────────────────────────────────────────────────────────────
 # TASK OPTIMIZATION
 # ─────────────────────────────────────────────────────────────
 
@@ -278,14 +365,18 @@ def optimize_tasks() -> str:
 def build_optimized_context() -> str:
     """
     Build complete optimized context for system prompt.
-    Returns: memory + tasks, trimmed to fit token budget.
+    Returns: hot memory + cold index + tasks, trimmed to fit token budget.
+    The cold index lets the model know what exists and fetch it on demand.
     """
     optimized_mem, _ = optimize_memory()
+    cold_index = build_cold_index()
     optimized_tasks = optimize_tasks()
     
     parts = []
     if optimized_mem:
         parts.append(optimized_mem)
+    if cold_index:
+        parts.append(cold_index)
     if optimized_tasks:
         parts.append(optimized_tasks)
     

@@ -376,6 +376,12 @@ Use the `memory` tool to read/write/append/clear your memory.
 - When starting a new task, check memory first for relevant context.
 - Keep memory concise: facts, not conversations.
 
+## Memory Auto-Recall (IMPORTANT — read this)
+Your context only shows the most recent/relevant memory entries (hot). The FULL history is on disk at ~/.tokioai/memory.md and ~/.tokioai/tasks.json.
+- If the user references something from days ago, a project, a decision, or a detail you don't fully remember — **DO NOT say "I don't know" or ask the user to repeat**. Instead, use `search_files` on ~/.tokioai/memory.md (or `read_file`) to retrieve the full entry, then answer.
+- The "## Memory Index" below lists every stored entry (1 line each). Use it to know what exists, then fetch the full section only if you need it.
+- This costs almost nothing and lets you recall anything ever saved, on demand.
+
 ## Task Tracking (CRITICAL FOR CONTINUITY)
 You have a persistent task list at ~/.tokioai/tasks.json.
 Use the `task` tool to add/update/list/remove tasks.
