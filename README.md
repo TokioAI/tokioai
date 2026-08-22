@@ -47,7 +47,14 @@ git clone https://github.com/TokioAI/tokioai.git
 cd tokioai && setup.bat
 
 # Manual (Python 3.10+)
-pip install -e . && tokioai --setup
+# IMPORTANT: you MUST install at least one provider extra, otherwise
+# tokioai will fail with ImportError when calling any model.
+# Pick your provider (or use [all] for everything):
+pip install -e ".[openai]"     # OpenRouter / OpenAI
+pip install -e ".[gemini]"     # Google Gemini
+pip install -e ".[claude]"     # Anthropic Claude
+pip install -e ".[all]"        # all providers + SSH
+tokioai --setup
 ```
 
 ### Setup
@@ -66,6 +73,10 @@ $ tokioai --setup
   Model [dual]: dual
   Config saved to ~/.tokioai/.env
 ```
+
+> **Note:** `pip install -e .` (without extras) does NOT install any AI provider SDK.
+> You need at least one: `pip install -e ".[openai]"`, `".[gemini]"`, `".[claude]"`, or `".[all]"`.
+> The setup scripts (`setup.sh` / `setup.bat`) handle this automatically.
 
 ### Usage
 
