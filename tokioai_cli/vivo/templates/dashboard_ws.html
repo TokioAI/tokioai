@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TokioAI Vivo - Live Dashboard</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#0d1117; color:#c9d1d9; margin:0; padding:20px; }
+    h1 { color:#58a6ff; margin-bottom:5px; }
+    .subtitle { color:#8b949e; margin-bottom:20px; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:16px; }
+    .card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; }
+    .card h3 { margin-top:0; color:#58a6ff; font-size:14px; text-transform:uppercase; letter-spacing:1px; }
+    .metric { display:inline-block; margin-right:24px; margin-bottom:12px; }
+    .label { color:#8b949e; font-size:11px; text-transform:uppercase; }
+    .value { font-size:24px; font-weight:600; }
+    .value.good { color:#3fb950; }
+    .value.warn { color:#d29922; }
+    .value.bad { color:#f85149; }
+    .event { border-bottom:1px solid #21262d; padding:8px 0; font-size:13px; display:flex; gap:8px; }
+    .event:last-child { border-bottom:none; }
+    .event .time { color:#8b949e; min-width:70px; }
+    .event .sev { min-width:70px; font-weight:600; text-transform:uppercase; font-size:11px; }
+    .info .sev { color:#79c0ff; }
+    .warning .sev { color:#d29922; }
+    .error .sev { color:#f85149; }
+    .critical .sev { color:#ff7b72; }
+    .reasoning { background:#0d1117; border-left:3px solid #58a6ff; padding:12px; margin:8px 0; font-size:13px; border-radius:0 6px 6px 0; }
+    .reasoning .model { color:#8b949e; font-size:11px; margin-bottom:4px; }
+    .reasoning .text { color:#c9d1d9; line-height:1.5; }
+    .status-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
+    .status-dot.alive { background:#3fb950; box-shadow:0 0 8px #3fb950; }
+    .status-dot.dead { background:#f85149; }
+    .object-item { padding:6px 0; border-bottom:1px solid #21262d; font-size:13px; }
+    .object-item:last-child { border-bottom:none; }
+    .confidence-bar { height:4px; background:#30363d; border-radius:2px; margin-top:4px; overflow:hidden; }
+    .confidence-fill { height:100%; background:#58a6ff; border-radius:2px; }
+    #connection-status { position:fixed; top:20px; right:20px; padding:6px 12px; border-radius:20px; font-size:12px; font-weight:600; }
+    #connection-status.connected { background:#3fb95020; color:#3fb950; border:1px solid #3fb950; }
+    #connection-status.disconnected { background:#f8514920; color:#f85149; border:1px solid #f85149; }
+    .gear-badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600; margin-left:8px; }
+    .gear-2 { background:#58a6ff20; color:#58a6ff; }
+    .gear-3 { background:#d2992220; color:#d29922; }
+  </style>
+</head>
+<body>
+  <div id="connection-status" class="disconnected">DISCONNECTED</div>
+  <h1>TokioAI Vivo</h1>
+  <div class="subtitle">Autonomous Organism Dashboard <span id="pid"></span></div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>System Status</h3>
+      <div class="metric"><div class="label">Status</div><div class="value" id="status"><span class="status-dot dead"></span>Offline</div></div>
+      <div class="metric"><div class="label">Uptime</div><div class="value" id="uptime">-</div></div>
+      <div class="metric"><div class="label">Health</div><div class="value" id="health">-</div></div>
+      <div class="metric"><div class="label">Ticks</div><div class="value" id="ticks">-</div></div>
+      <div class="metric"><div class="label">Autonomy</div><div class="value" id="autonomy">-</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Token Budget</h3>
+      <div class="metric"><div class="label">Session</div><div class="value" id="cost-session">$0.000</div></div>
+      <div class="metric"><div class="label">Hourly</div><div class="value" id="cost-hourly">$0.000</div></div>
+      <div class="metric"><div class="label">Daily</div><div class="value" id="cost-daily">$0.000</div></div>
+      <div class="metric"><div class="label">Gear2</div><div class="value" id="gear2-calls">0</div></div>
+      <div class="metric"><div class="label">Gear3</div><div class="value" id="gear3-calls">0</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Objective</h3>
+      <div id="objective" style="font-size:14px; line-height:1.6; color:#c9d1d9;">-</div>
+      <div style="margin-top:12px; font-size:12px; color:#8b949e;">
+        <span class="gear-badge gear-2">Gear2: <span id="gear2-model">-</span></span>
+        <span class="gear-badge gear-3">Gear3: <span id="gear3-model">-</span></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid" style="margin-top:16px;">
+    <div class="card" style="grid-column: span 2;">
+      <h3>Live Reasoning Stream</h3>
+      <div id="reasoning-stream"></div>
+    </div>
+
+    <div class="card">
+      <h3>Recent Events</h3>
+      <div id="events"></div>
+    </div>
+
+    <div class="card">
+      <h3>Active Objects</h3>
+      <div id="objects"></div>
+    </div>
+
+    <div class="card">
+      <h3>Learned Rules</h3>
+      <div id="rules"></div>
+    </div>
+  </div>
+
+  <script>
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    const statusEl = document.getElementById('connection-status');
+
+    ws.onopen = () => {
+      statusEl.textContent = 'CONNECTED';
+      statusEl.className = 'connected';
+    };
+
+    ws.onclose = () => {
+      statusEl.textContent = 'DISCONNECTED';
+      statusEl.className = 'disconnected';
+      setTimeout(() => location.reload(), 3000);
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      updateDashboard(data);
+    };
+
+    function updateDashboard(data) {
+      // Status
+      const isAlive = data.status === 'alive';
+      document.getElementById('status').innerHTML = `<span class="status-dot ${isAlive ? 'alive' : 'dead'}"></span>${isAlive ? 'Alive' : 'Offline'}`;
+      document.getElementById('uptime').textContent = data.uptime_s ? `${Math.floor(data.uptime_s / 60)}m ${Math.floor(data.uptime_s % 60)}s` : '-';
+      document.getElementById('health').textContent = data.health !== undefined ? data.health.toFixed(2) : '-';
+      document.getElementById('health').className = 'value ' + (data.health > 0.7 ? 'good' : data.health > 0.4 ? 'warn' : 'bad');
+      document.getElementById('ticks').textContent = data.ticks || '-';
+      document.getElementById('autonomy').textContent = data.autonomy !== undefined ? `L${data.autonomy}` : '-';
+      document.getElementById('pid').textContent = data.pid ? `(PID ${data.pid})` : '';
+
+      // Budget
+      const t = data.token_summary || {};
+      document.getElementById('cost-session').textContent = `$${(t.session_cost_usd || 0).toFixed(3)}`;
+      document.getElementById('cost-hourly').textContent = `$${(t.hourly_cost_usd || 0).toFixed(3)}`;
+      document.getElementById('cost-daily').textContent = `$${(t.daily_cost_usd || 0).toFixed(3)}`;
+      document.getElementById('gear2-calls').textContent = t.gear2_calls_hour || 0;
+      document.getElementById('gear3-calls').textContent = t.gear3_calls_hour || 0;
+
+      // Objective
+      document.getElementById('objective').textContent = data.objective || '-';
+      document.getElementById('gear2-model').textContent = data.gear2_model || '-';
+      document.getElementById('gear3-model').textContent = data.gear3_model || '-';
+
+      // Events
+      const eventsDiv = document.getElementById('events');
+      const events = (data.recent_events || []).slice(-10).reverse();
+      eventsDiv.innerHTML = events.map(e => {
+        const sev = e.severity || 'info';
+        const ts = new Date(e.ts * 1000).toLocaleTimeString();
+        return `<div class="event ${sev}"><span class="time">${ts}</span><span class="sev">${sev}</span><span>${e.type}</span></div>`;
+      }).join('') || '<i style="color:#8b949e">No events</i>';
+
+      // Objects
+      const objectsDiv = document.getElementById('objects');
+      const objects = data.active_objects || [];
+      objectsDiv.innerHTML = objects.map(o => `
+        <div class="object-item">
+          <b>${o.label}</b> (${o.source})
+          <div class="confidence-bar"><div class="confidence-fill" style="width:${(o.confidence * 100).toFixed(0)}%"></div></div>
+        </div>
+      `).join('') || '<i style="color:#8b949e">No objects tracked</i>';
+
+      // Rules
+      const rulesDiv = document.getElementById('rules');
+      const rules = (data.learned_rules || []);
+      rulesDiv.innerHTML = rules.map(r => `
+        <div class="object-item">
+          <b>${r.id}</b><br>
+          <small style="color:#8b949e">${r.condition} → ${r.action}</small><br>
+          <small>hits: ${r.hits}</small>
+        </div>
+      `).join('') || '<i style="color:#8b949e">No learned rules</i>';
+
+      // Reasoning stream
+      if (data.last_reasoning) {
+        const streamDiv = document.getElementById('reasoning-stream');
+        const r = data.last_reasoning;
+        const div = document.createElement('div');
+        div.className = 'reasoning';
+        div.innerHTML = `
+          <div class="model">${r.gear ? 'Gear-' + r.gear : 'System'} | ${r.model || ''} | ${r.latency_s || 0}s | ${r.input_tokens || 0}+${r.output_tokens || 0} tokens</div>
+          <div class="text">${r.assessment || r.reason || r.text || JSON.stringify(r).substring(0, 300)}</div>
+        `;
+        streamDiv.insertBefore(div, streamDiv.firstChild);
+        while (streamDiv.children.length > 10) streamDiv.removeChild(streamDiv.lastChild);
+      }
+    }
+  </script>
+</body>
+</html>

@@ -133,10 +133,9 @@ def _compute_relevance(title: str, body: str, entry_date) -> float:
         if re.search(kw, title, re.I) or re.search(kw, body[:200], re.I):
             score += 20
     
-    # Deprecated/obsolete markers
+    # Deprecated/obsolete markers (match standalone words, not version numbers in product names)
     deprecated = [
-        r'abandoned', r'pausa', r'backup', r'old', r'deprecated',
-        r'v9', r'v8', r'v7', r'v6', r'v5', r'v4', r'v3', r'v2', r'v1'
+        r'\babandoned\b', r'\bpausa\b', r'\bbackup\b', r'\bold\b', r'\bdeprecated\b',
     ]
     for kw in deprecated:
         if re.search(kw, title, re.I):

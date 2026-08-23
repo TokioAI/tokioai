@@ -276,25 +276,18 @@ def _model_badge_for(ops: TokioOps) -> str:
         return ops.router_badge_dual
     # Single-model badge
     model = ops.model
-    color_fg = C_BRIGHT_CYAN
     color_bg = "\033[48;5;24m\033[1m"
     if "kimi-k3" in model or model == "moonshotai/kimi-k3":
-        color_fg = C_BRIGHT_YELLOW
         color_bg = "\033[48;5;94m\033[1m"
     elif "kimi" in model or "moonshot" in model:
-        color_fg = C_BRIGHT_GREEN
         color_bg = "\033[48;5;22m\033[1m"
     elif "claude-opus" in model or "opus" in model:
-        color_fg = C_BRIGHT_MAGENTA
         color_bg = "\033[48;5;53m\033[1m"
     elif "claude-sonnet" in model or "sonnet" in model:
-        color_fg = C_BRIGHT_BLUE
         color_bg = "\033[48;5;25m\033[1m"
     elif "gpt" in model or model in ("o1", "o3", "o3-mini"):
-        color_fg = C_BRIGHT_GREEN
         color_bg = "\033[48;5;28m\033[1m"
     elif "gemini" in model:
-        color_fg = C_BRIGHT_CYAN
         color_bg = "\033[48;5;31m\033[1m"
     short = model.split("/")[-1][:14]
     return f"{color_bg} {short} {C_RESET}"
@@ -463,25 +456,30 @@ def _load_session():
 # ═══════════════════════════════════════════════════════
 
 class CostTracker:
+    # NOTE: More specific model names MUST come BEFORE shorter ones
+    # (e.g. kimi-k2.7-code before kimi-k2) because matching uses substring 'in'.
     MODEL_COSTS = {
+        # Kimi / Moonshot — specific first
+        "kimi-k2.7-code": {"input": 0.71, "output": 3.50},
+        "moonshotai/kimi-k2.7-code": {"input": 0.71, "output": 3.50},
+        "kimi-k3": {"input": 3.0, "output": 15.0},
+        "moonshotai/kimi-k3": {"input": 3.0, "output": 15.0},
+        "kimi-k2": {"input": 0.57, "output": 2.30},
+        "moonshotai/kimi-k2": {"input": 0.57, "output": 2.30},
+        # Claude
         "claude-sonnet-4": {"input": 3.0, "output": 15.0},
         "claude-opus-4": {"input": 15.0, "output": 75.0},
         "claude-3-haiku": {"input": 0.25, "output": 1.25},
+        "anthropic/claude-sonnet-4": {"input": 3.0, "output": 15.0},
+        "anthropic/claude-opus-4": {"input": 15.0, "output": 75.0},
+        # OpenAI
         "gpt-4o": {"input": 2.5, "output": 10.0},
         "gpt-5": {"input": 5.0, "output": 20.0},
         "o3": {"input": 10.0, "output": 40.0},
-        "gemini-2.5": {"input": 0.15, "output": 0.60},
-        "gemini-3": {"input": 0.15, "output": 0.60},
+        # Gemini
         "gemini-3.1": {"input": 0.15, "output": 0.60},
-        # OpenRouter models
-        "kimi-k3": {"input": 3.0, "output": 15.0},
-        "kimi-k2": {"input": 0.57, "output": 2.30},
-        "moonshotai/kimi-k3": {"input": 3.0, "output": 15.0},
-        "moonshotai/kimi-k2": {"input": 0.57, "output": 2.30},
-        "kimi-k2.7-code": {"input": 0.71, "output": 3.50},
-        "moonshotai/kimi-k2.7-code": {"input": 0.71, "output": 3.50},
-        "anthropic/claude-sonnet-4": {"input": 3.0, "output": 15.0},
-        "anthropic/claude-opus-4": {"input": 15.0, "output": 75.0},
+        "gemini-3": {"input": 0.15, "output": 0.60},
+        "gemini-2.5": {"input": 0.15, "output": 0.60},
         "google/gemini-3.1-pro": {"input": 2.0, "output": 12.0},
         "google/gemini-3.6-flash": {"input": 1.5, "output": 7.5},
     }
@@ -1721,9 +1719,11 @@ def run_interactive(
     current_provider = provider_override or PROVIDER
     current_model = model_override or MODEL
 
-    # Dual mode always routes through OpenRouter, so fix provider display
+    # Dual mode: choose provider based on whether the model string uses OpenRouter IDs (org/name)
+    # or Moonshot direct IDs (plain model names). Default dual alias is Moonshot direct.
     if isinstance(current_model, str) and current_model.startswith("dual:"):
-        current_provider = "openrouter"
+        dual_body = current_model[5:]
+        current_provider = "openrouter" if "/" in dual_body else "kimi"
 
     # Validate minimum config
     if current_provider in ("anthropic-vertex", "claude-vertex", "vertex") and not VERTEX_PROJECT:
@@ -2018,21 +2018,22 @@ def run_interactive(
 
             # ── Dual-model router mode ──
             if new_model.startswith("dual:"):
-                or_key = os.getenv("OPENROUTER_API_KEY")
-                if not or_key:
-                    _safe_print(f"  {C_BRIGHT_YELLOW}!{C_RESET}  Dual mode requires OPENROUTER_API_KEY. Run: tokioai --setup")
+                dual_body = new_model[5:]
+                is_openrouter_dual = "/" in dual_body
+                dual_key = os.getenv("OPENROUTER_API_KEY") if is_openrouter_dual else (os.getenv("KIMI_API_KEY") or os.getenv("MOONSHOT_API_KEY"))
+                if not dual_key:
+                    need_var = "OPENROUTER_API_KEY" if is_openrouter_dual else "KIMI_API_KEY / MOONSHOT_API_KEY"
+                    _safe_print(f"  {C_BRIGHT_YELLOW}!{C_RESET}  Dual mode requires {need_var}. Run: tokioai --setup")
                     continue
                 try:
                     old_msgs = ops._messages
-                    ops = TokioOps(provider="openrouter", model=new_model)
+                    dual_provider = "openrouter" if is_openrouter_dual else "kimi"
+                    ops = TokioOps(provider=dual_provider, model=new_model)
                     ops._messages = old_msgs
                     ops._max_rounds = max_rounds
                     ops._max_time = max_time
-                    current_provider = "openrouter"
+                    current_provider = dual_provider
                     current_model = new_model
-                    parts = new_model[5:].split("+")
-                    p_name = parts[0].split("/")[-1] if parts else "?"
-                    s_name = parts[1].split("/")[-1] if len(parts) > 1 else "?"
                     p_badge = "\033[48;5;22m\033[1m K2.7 \033[0m"
                     s_badge = "\033[48;5;94m\033[1m K3 \033[0m"
                     _safe_print(f"  {C_BRIGHT_GREEN}OK{C_RESET} {old_model} -> {p_badge} + {s_badge} {C_GRAY}(DUAL ROUTER){C_RESET}")
@@ -2715,7 +2716,46 @@ def main():
     parser.add_argument("--setup", action="store_true",
                         help="Run interactive setup wizard")
 
+    # TokioAI Vivo (autonomous organism mode)
+    parser.add_argument("--vivo", action="store_true",
+                        help="Enter autonomous organism mode")
+    parser.add_argument("--vivo-stop", action="store_true",
+                        help="Stop a running vivo instance")
+    parser.add_argument("--vivo-status", action="store_true",
+                        help="Show vivo status")
+    parser.add_argument("--objective", default=None,
+                        help="Set vivo objective")
+    parser.add_argument("--autonomy", type=int, default=None, choices=[0, 1, 2, 3],
+                        help="Autonomy level (0=sim,1=assisted,2=trusted,3=full)")
+    parser.add_argument("--dry-run", action="store_true", default=None,
+                        help="Simulate actions (vivo)")
+    parser.add_argument("--no-dry-run", action="store_true", default=None,
+                        help="Actually execute approved actions (vivo)")
+    parser.add_argument("--budget-hour", type=float, default=None,
+                        help="Hourly budget USD")
+    parser.add_argument("--budget-session", type=float, default=None,
+                        help="Session budget USD")
+    parser.add_argument("--gear2-model", default=None,
+                        help="Gear 2 model")
+    parser.add_argument("--gear3-model", default=None,
+                        help="Gear 3 model")
+    parser.add_argument("--tick", type=float, default=None,
+                        help="Tick interval seconds")
+    parser.add_argument("--report-every", type=float, default=None,
+                        help="Report interval seconds")
+    parser.add_argument("--cortex-interval", type=float, default=None,
+                        help="Cortex Gear-2 review interval seconds")
+
     args = parser.parse_args()
+
+    # Handle Vivo before normal flow
+    try:
+        from tokioai_cli.vivo.cli_plugin import handle_vivo_args
+        if handle_vivo_args(args):
+            return
+    except Exception as e:
+        print(f"[TOKIO VIVO] Error: {e}")
+        return
 
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)

@@ -19,15 +19,18 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-# ── Default model IDs (OpenRouter) ──
-DEFAULT_PRIMARY = "moonshotai/kimi-k2.7-code"     # cheap, fast, code-focused
-DEFAULT_SECONDARY = "moonshotai/kimi-k3"           # expensive, smart, reasoning
+# ── Default model IDs (Moonshot direct) ──
+DEFAULT_PRIMARY = "kimi-k2.7-code"   # cheap, fast, code-focused
+DEFAULT_SECONDARY = "kimi-k3"         # expensive, smart, reasoning
 
 # ANSI reset (kept local to avoid cross-module dependency)
 C_RESET = "\033[0m"
 
 # ── Pricing per million tokens ──
+# Supports both Moonshot direct and OpenRouter model IDs for cost estimates.
 PRICING = {
+    "kimi-k2.7-code":            {"input": 0.71, "output": 3.50},
+    "kimi-k3":                   {"input": 3.00, "output": 15.00},
     "moonshotai/kimi-k2.7-code": {"input": 0.71, "output": 3.50},
     "moonshotai/kimi-k3":        {"input": 3.00, "output": 15.00},
 }
@@ -126,7 +129,7 @@ _COMPLEX_KEYWORDS = {
     "should i", "best approach", "best practice", "production deployment",
     "high load", "under load", "at scale",
     # Creative & complex reasoning
-    "explain why", "reason about", "analyze", "deep dive", "in-depth",
+    "explain why", "explain how", "explain", "reason about", "analyze", "deep dive", "in-depth",
     "philosophical", "ethical", "implication", "implications", "consequences",
     "security implication", "what are the", "how does.*work",
     "creative", "brainstorm", "brainstorming", "innovate", "novel approach",
@@ -293,7 +296,7 @@ def classify_complexity(user_input: str, conversation_depth: int = 0,
         r"\b(razona|analiza|evalúa|evalua)\b.*\b(paso a paso|profundidad|detalle|fondo|trade-off|tradeoff)\b",
         r"\b(análisis|analisis|analysis)\b.*\b(riesgo|riesgos|risk|seguridad|red|infraestructura)\b",
         r"\b(mitigar|mitigate|defend|defender)\b.*\b(ssrf|cve|ransomware|ataque|attack|vulnerabilidad)\b",
-        r"\b(dns amplification|amplificacion dns|amplification)\b.*\b(attack|ataque|works|funciona)\b",
+        r"\b(dns amplification|amplificacion dns|amplification)\b.*\b(attacks?|ataques?|works|funciona)\b",
         r"\b(design|build|create|implement)\b.*\b(secure|security|seguro|seguridad)\b.*\b(ci/cd|pipeline|cicd)\b",
         r"\b(playbook|runbook|plan)\b.*\b(incident|response|respuesta|seguridad|security)\b",
         r"\b(incident response playbook|playbook de respuesta|incident playbook|security playbook)\b",

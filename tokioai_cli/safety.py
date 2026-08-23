@@ -99,7 +99,7 @@ def _build_default_patterns() -> List[SecretPattern]:
     patterns.append(SecretPattern(
         "google_api_key",
         "api_key",
-        re.compile(r"(?<![A-Za-z0-9_])(AIza[0-9A-Za-z_-]{35})\b"),
+        re.compile(r"(?<![A-Za-z0-9_])(AIza[0-9A-Za-z_-]{35,})\b"),
     ))
     patterns.append(SecretPattern(
         "github_pat",
@@ -115,6 +115,30 @@ def _build_default_patterns() -> List[SecretPattern]:
         "aws_secret_key",
         "api_key",
         re.compile(r"(?<![A-Za-z0-9_/+=])([A-Za-z0-9/+=]{40})\b"),
+    ))
+
+    # JWT tokens (header.payload.signature)
+    patterns.append(SecretPattern(
+        "jwt_token",
+        "api_key",
+        re.compile(r"\b(eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+)\b"),
+    ))
+
+    # Slack / Discord / generic high-entropy bot tokens
+    patterns.append(SecretPattern(
+        "slack_bot_token",
+        "api_key",
+        re.compile(r"(?<![A-Za-z0-9_])(xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[A-Za-z0-9]{24})\b"),
+    ))
+
+    # URL tokens / signed URLs with sensitive parameters
+    patterns.append(SecretPattern(
+        "url_secret_token",
+        "api_key",
+        re.compile(
+            r"(?<![A-Za-z0-9_])(?:token|signature|auth|key)=[A-Za-z0-9_\-]{32,}",
+            re.IGNORECASE,
+        ),
     ))
 
     # Passwords in connection strings / env vars
@@ -133,7 +157,7 @@ def _build_default_patterns() -> List[SecretPattern]:
         "private_key",
         re.compile(
             r"(-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"
-            r"[\s\S]{100,}?-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----)"
+            r"[\s\S]{40,}?-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----)"
         ),
     ))
 
@@ -196,6 +220,77 @@ def _build_default_patterns() -> List[SecretPattern]:
         ),
     ))
 
+    # More high-entropy API key patterns
+    patterns.append(SecretPattern(
+        "huggingface_token",
+        "api_key",
+        re.compile(r"(?<![A-Za-z0-9_])(hf_[A-Za-z0-9]{34,42})\b"),
+    ))
+    patterns.append(SecretPattern(
+        "stripe_key",
+        "api_key",
+        re.compile(r"(?<![A-Za-z0-9_])(sk_(?:live|test)_[A-Za-z0-9]{24,})\b"),
+    ))
+    patterns.append(SecretPattern(
+        "pypi_token",
+        "api_key",
+        re.compile(r"(?<![A-Za-z0-9_])(pypi-[A-Za-z0-9_]{30,})\b"),
+    ))
+    patterns.append(SecretPattern(
+        "dockerconfig_token",
+        "api_key",
+        re.compile(r"(?<![A-Za-z0-9_])(dckr_pat_[A-Za-z0-9_]{24,})\b"),
+    ))
+    patterns.append(SecretPattern(
+        "ngrok_token",
+        "api_key",
+        re.compile(r"(?<![A-Za-z0-9_])(\d[0-9a-zA-Z_-]{30,}\.[0-9a-zA-Z_-]{30,})\b"),
+    ))
+
+    # Private key fingerprints / SSH keys
+    patterns.append(SecretPattern(
+        "ssh_private_key_openssh",
+        "private_key",
+        re.compile(
+            r"(-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]{80,}?-----END OPENSSH PRIVATE KEY-----)"
+        ),
+    ))
+
+    # Sensitive cloud config / kubeconfig
+    patterns.append(SecretPattern(
+        "kubeconfig_cert",
+        "private_key",
+        re.compile(
+            r"(client-certificate-data:\s*[A-Za-z0-9+/=]{80,})"
+        ),
+    ))
+    patterns.append(SecretPattern(
+        "kubeconfig_key",
+        "private_key",
+        re.compile(
+            r"(client-key-data:\s*[A-Za-z0-9+/=]{80,})"
+        ),
+    ))
+
+    # IPv6 loopback / private addresses (simplified)
+    patterns.append(SecretPattern(
+        "ipv6_private",
+        "ip_address",
+        re.compile(
+            r"\b(?:fc|fd)[0-9a-fA-F]{2}(?::[0-9a-fA-F]{0,4}){7}\b"
+        ),
+    ))
+
+    # Generic base64 blobs that look like secrets (only in paranoid mode)
+    patterns.append(SecretPattern(
+        "suspicious_base64",
+        "api_key",
+        re.compile(
+            r"\b([A-Za-z0-9+/]{40,}={0,2})\b"
+        ),
+        priority=1,
+    ))
+
     return patterns
 
 
@@ -247,6 +342,12 @@ class SafetyGuard:
                     continue
                 if pat.name == "aws_secret_key" and not re.search(r"[A-Z]", value):
                     continue
+                # Paranoid-only patterns: only enforce when paranoid mode is active
+                if pat.name == "suspicious_base64" and not self.paranoid:
+                    continue
+                # ngrok pattern is too generic for normal mode; limit to paranoid unless it contains a dot
+                if pat.name == "ngrok_token" and not self.paranoid and "." not in value:
+                    continue
                 candidates.append(Redaction(
                     category=pat.category,
                     detector=pat.name,
@@ -273,6 +374,17 @@ class SafetyGuard:
                 report.block_reason = (
                     f"blocked {len(blocked)} sensitive value(s) in categories: "
                     + ", ".join(sorted({r.category for r in blocked}))
+                )
+
+        # Paranoid mode: any high-risk detection blocks the message outright.
+        if self.paranoid and not report.blocked:
+            high_risk = {"api_key", "password", "private_key", "connection_string"}
+            risky = [r for r in redactions if r.category in high_risk]
+            if risky:
+                report.blocked = True
+                report.block_reason = (
+                    f"paranoid mode blocked {len(risky)} high-risk value(s) in categories: "
+                    + ", ".join(sorted({r.category for r in risky}))
                 )
 
         if self.on_detection:

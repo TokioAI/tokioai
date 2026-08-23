@@ -3,7 +3,7 @@
 TokioAI Ops — Multi-provider AI operations engine.
 
 Based on the production tokio_ops.py from tokioai-v2.
-Supports: Claude Vertex AI, Claude API, OpenAI, Gemini (API key), OpenRouter, Ollama.
+Supports: Claude Vertex AI, Claude API, OpenAI, Gemini (API key), Moonshot AI, OpenRouter, Ollama.
 
 Configuration via ~/.tokioai/.env or environment variables.
 """
@@ -18,6 +18,7 @@ import time
 from typing import Optional, Callable
 
 from tokioai_cli import safety as _safety
+from tokioai_cli import security_config as _sec
 from tokioai_cli.memory_optimizer import build_optimized_context, get_memory_stats
 
 # ---------------------------------------------------------------------------
@@ -76,20 +77,32 @@ MODEL_ALIASES = {
     "kimi-k2": "kimi-k2-0711-preview",
     "k2": "kimi-k2-0711-preview",
     "moonshot": "moonshot-v1-auto",
+    # Kimi K3 direct
+    "k3": "kimi-k3",
+    "kimi-k3": "kimi-k3",
+    "kimi-k3-direct": "kimi-k3",
+    # Kimi K2.7 direct
+    "k2.7": "kimi-k2.7-code",
+    "k27": "kimi-k2.7-code",
+    "kimi-k2.7": "kimi-k2.7-code",
+    "kimi-k27": "kimi-k2.7-code",
+    "kimi-code": "kimi-k2.7-code",
     # ── Kimi via OpenRouter (auto-resolve) ──
-    "kimi-k3": "moonshotai/kimi-k3",
-    "k3": "moonshotai/kimi-k3",
-    "kimi-k2.7": "moonshotai/kimi-k2.7-code",
-    "kimi-k27": "moonshotai/kimi-k2.7-code",
-    "k27": "moonshotai/kimi-k2.7-code",
-    "k2.7": "moonshotai/kimi-k2.7-code",
-    "kimi-code": "moonshotai/kimi-k2.7-code",
-    # ── Dual-Model Router (auto K2.7 + K3) ──
-    "dual": "dual:moonshotai/kimi-k2.7-code+moonshotai/kimi-k3",
-    "kimi-dual": "dual:moonshotai/kimi-k2.7-code+moonshotai/kimi-k3",
-    "k2k3": "dual:moonshotai/kimi-k2.7-code+moonshotai/kimi-k3",
-    "dual-kimi": "dual:moonshotai/kimi-k2.7-code+moonshotai/kimi-k3",
-    # ── OpenRouter ──
+    "or-k3": "moonshotai/kimi-k3",
+    "or-k27": "moonshotai/kimi-k2.7-code",
+    "or-kimi": "moonshotai/kimi-k2",
+    "or-kimi3": "moonshotai/kimi-k3",
+    "or-kimi-code": "moonshotai/kimi-k2.7-code",
+    # ── Dual-Model Router: Moonshot direct (default) ──
+    "dual": "dual:kimi-k2.7-code+kimi-k3",
+    "kimi-dual": "dual:kimi-k2.7-code+kimi-k3",
+    "k2k3": "dual:kimi-k2.7-code+kimi-k3",
+    "dual-kimi": "dual:kimi-k2.7-code+kimi-k3",
+    # ── Dual-Model Router: via OpenRouter ──
+    "dual-or": "dual:moonshotai/kimi-k2.7-code+moonshotai/kimi-k3",
+    "k2k3-or": "dual:moonshotai/kimi-k2.7-code+moonshotai/kimi-k3",
+    "or-dual": "dual:moonshotai/kimi-k2.7-code+moonshotai/kimi-k3",
+    # ── OpenRouter (non-Kimi models — Kimi via OpenRouter is above) ──
     "or-claude": "anthropic/claude-sonnet-4",
     "or-opus": "anthropic/claude-opus-4",
     "or-gpt": "openai/gpt-4o",
@@ -98,11 +111,6 @@ MODEL_ALIASES = {
     "or-gemini31": "google/gemini-3.1-pro-preview",
     "or-llama": "meta-llama/llama-3.1-405b-instruct",
     "or-deepseek": "deepseek/deepseek-r1",
-    "or-kimi": "moonshotai/kimi-k2",
-    "or-kimi3": "moonshotai/kimi-k3",
-    "or-k3": "moonshotai/kimi-k3",
-    "or-k27": "moonshotai/kimi-k2.7-code",
-    "or-kimi-code": "moonshotai/kimi-k2.7-code",
 }
 
 
@@ -142,60 +150,31 @@ def list_aliases() -> dict[str, list[str]]:
 # ---------------------------------------------------------------------------
 
 def detect_provider() -> str:
-    """Auto-detect the best available provider from env vars."""
-    explicit = os.getenv("TOKIOAI_PROVIDER", "").lower().strip()
-    if explicit:
-        # Trust explicit provider for well-defined providers (vertex, anthropic, openai)
-        # Only cross-check for ambiguous providers (kimi, gemini) that might actually
-        # be OpenRouter models in disguise (e.g., kimi provider + moonshotai/kimi-k3 model)
-        _trusted_providers = {"anthropic-vertex", "claude-vertex", "vertex",
-                              "anthropic", "openai", "openrouter", "ollama"}
-        if explicit not in _trusted_providers:
-            # Check if the TOKIOAI_MODEL has org/name format = OpenRouter model
-            primary = os.getenv("TOKIOAI_MODEL", "")
-            resolved = resolve_model(primary) if primary else ""
-            model_hint = resolved if "/" in resolved and not resolved.startswith("models/") else ""
-            if model_hint:
-                or_key = os.getenv("OPENROUTER_API_KEY")
-                if or_key:
-                    return "openrouter"
-                # Check if a key from another provider is actually an OpenRouter key
-                for kvar in ("KIMI_API_KEY", "MOONSHOT_API_KEY"):
-                    k = os.getenv(kvar, "")
-                    if k.startswith("sk-or-"):
-                        os.environ["OPENROUTER_API_KEY"] = k
-                        return "openrouter"
-        return explicit
+    """Auto-detect the best available provider from env vars — hardened edition.
 
-    # Vertex AI credentials → anthropic-vertex
-    if os.getenv("VERTEX_PROJECT") or os.getenv("ANTHROPIC_VERTEX_PROJECT_ID"):
-        return "anthropic-vertex"
-
-    # Direct Anthropic API key
-    if os.getenv("ANTHROPIC_API_KEY"):
-        return "anthropic"
-
-    # OpenAI
-    if os.getenv("OPENAI_API_KEY"):
-        return "openai"
-
-    # Gemini (API key)
-    if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
-        return "gemini"
-
-    # Kimi / Moonshot AI
-    if os.getenv("KIMI_API_KEY") or os.getenv("MOONSHOT_API_KEY"):
-        return "kimi"
-
-    # OpenRouter
-    if os.getenv("OPENROUTER_API_KEY"):
-        return "openrouter"
-
-    # Ollama
-    if os.getenv("OLLAMA_HOST"):
-        return "ollama"
-
-    return "anthropic-vertex"  # default
+    Uses security_config.decide_provider for auditable, validation-first decisions.
+    """
+    env_keys = {
+        "VERTEX_PROJECT": os.getenv("VERTEX_PROJECT") or os.getenv("ANTHROPIC_VERTEX_PROJECT_ID"),
+        "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
+        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
+        "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"),
+        "KIMI_API_KEY": os.getenv("KIMI_API_KEY") or os.getenv("MOONSHOT_API_KEY"),
+        "MOONSHOT_API_KEY": os.getenv("MOONSHOT_API_KEY"),
+        "OPENROUTER_API_KEY": os.getenv("OPENROUTER_API_KEY"),
+        "OLLAMA_HOST": os.getenv("OLLAMA_HOST"),
+    }
+    explicit = os.getenv("TOKIOAI_PROVIDER", "")
+    model = os.getenv("TOKIOAI_MODEL", "")
+    decision = _sec.decide_provider(explicit, model, env_keys)
+    _sec.fail_or_warn(decision)
+    # If routing was redirected to OpenRouter, propagate the key source.
+    if decision.provider == "openrouter" and decision.key_source and decision.key_source.startswith("KIMI"):
+        k = env_keys.get(decision.key_source)
+        if k:
+            os.environ["OPENROUTER_API_KEY"] = k
+    decision.log()
+    return decision.provider
 
 
 def detect_model() -> str:
@@ -926,9 +905,60 @@ def execute_tool(name: str, input_data: dict) -> str:
 # Client initialization — one function, all providers
 # ---------------------------------------------------------------------------
 
-def init_client(provider: str):
-    """Initialize AI client. Returns (client, client_type)."""
+def init_client(provider: str, *, allow_key_from_env: bool = True, required_key_prefix: Optional[str] = None):
+    """Initialize AI client. Returns (client, client_type).
+
+    Security flags:
+        allow_key_from_env:  when False, refuse to read API keys from environment
+                             and require that the caller already set the key.
+        required_key_prefix: if provided, reject keys that do not start with this prefix.
+    """
     provider = provider.lower().strip()
+
+    # Normalize ambiguous aliases to canonical providers.
+    alias_map = {
+        "google": "gemini",
+        "moonshot": "kimi",
+        "claude-vertex": "anthropic-vertex",
+        "vertex": "anthropic-vertex",
+        "local": "ollama",
+    }
+    provider = alias_map.get(provider, provider)
+
+    # Defense in depth: provider lock overrides runtime provider selection.
+    lock = _sec.provider_lock()
+    if lock and provider != lock:
+        _sec.audit_security_event("init_client", provider, success=False, detail=f"provider_lock_mismatch: locked={lock}")
+        print(f"\033[31mERROR: Provider is locked to '{lock}' but init_client was called with '{provider}'\033[0m")
+        sys.exit(1)
+
+    # Explicit env-opt-in for keyless clients (only affects API-key providers).
+    if _sec.require_explicit_key_for_init_client():
+        allow_key_from_env = False
+    # NOTE: The allow_key_from_env check is enforced INSIDE _require_key_from_env(),
+    # NOT globally here. This lets keyless providers (vertex, ollama) work normally.
+
+    def _require_key_from_env(key_name: str) -> str:
+        """Read a key from the environment and fail hard if missing."""
+        if not allow_key_from_env:
+            _sec.audit_security_event("init_client", provider, key_name, success=False, detail="env_key_source_disallowed")
+            print(f"\033[31mERROR: init_client('{provider}') does not allow reading {key_name} from environment.\033[0m")
+            print(f"Set TOKIO_INIT_REQUIRE_EXPLICIT_KEY=0 in your .env to allow it.")
+            sys.exit(1)
+        key = os.getenv(key_name, "")
+        if not key:
+            _sec.audit_security_event("init_client", provider, key_name, success=False, detail="missing_key")
+            print(f"\033[31mERROR: {key_name} is not set.\033[0m")
+            sys.exit(1)
+        return key
+
+    def _final_key_check(key: str, provider_name: str, key_source: str) -> None:
+        """Apply optional caller-supplied prefix filter on top of normal validation."""
+        if required_key_prefix and not key.startswith(required_key_prefix):
+            _sec.audit_security_event("init_client", provider_name, key_source, success=False,
+                                       detail=f"required_prefix_mismatch: expected {required_key_prefix}")
+            print(f"\033[31mERROR: {key_source} for provider '{provider_name}' must start with '{required_key_prefix}'\033[0m")
+            sys.exit(1)
 
     if provider in ("anthropic-vertex", "claude-vertex", "vertex"):
         project = VERTEX_PROJECT
@@ -957,11 +987,15 @@ def init_client(provider: str):
             sys.exit(1)
 
     elif provider == "anthropic":
-        api_key = os.getenv("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            print("\033[31mERROR: ANTHROPIC_API_KEY not set\033[0m")
+        api_key = _require_key_from_env("ANTHROPIC_API_KEY")
+        ok, err = _sec.validate_key_for_provider("anthropic", api_key)
+        if not ok:
+            _sec.audit_security_event("init_client", "anthropic", "ANTHROPIC_API_KEY", success=False, detail=err)
+            print(f"\033[31mERROR: {err}\033[0m")
             print("Get your key at: https://console.anthropic.com/")
             sys.exit(1)
+        _final_key_check(api_key, "anthropic", "ANTHROPIC_API_KEY")
+        _sec.audit_security_event("init_client", "anthropic", "ANTHROPIC_API_KEY", success=True)
         try:
             from anthropic import Anthropic
             return Anthropic(api_key=api_key), "anthropic"
@@ -970,11 +1004,15 @@ def init_client(provider: str):
             sys.exit(1)
 
     elif provider == "openai":
-        api_key = os.getenv("OPENAI_API_KEY", "")
-        if not api_key:
-            print("\033[31mERROR: OPENAI_API_KEY not set\033[0m")
+        api_key = _require_key_from_env("OPENAI_API_KEY")
+        ok, err = _sec.validate_key_for_provider("openai", api_key)
+        if not ok:
+            _sec.audit_security_event("init_client", "openai", "OPENAI_API_KEY", success=False, detail=err)
+            print(f"\033[31mERROR: {err}\033[0m")
             print("Get your key at: https://platform.openai.com/api-keys")
             sys.exit(1)
+        _final_key_check(api_key, "openai", "OPENAI_API_KEY")
+        _sec.audit_security_event("init_client", "openai", "OPENAI_API_KEY", success=True)
         try:
             from openai import OpenAI
             return OpenAI(api_key=api_key), "openai"
@@ -1015,12 +1053,16 @@ def init_client(provider: str):
             print("\033[31mERROR: google-genai not installed. Run: pip install google-genai\033[0m")
             sys.exit(1)
 
-    elif provider in ("gemini", "google"):
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
-        if not api_key:
-            print("\033[31mERROR: GEMINI_API_KEY or GOOGLE_API_KEY not set\033[0m")
+    elif provider == "gemini":
+        api_key = _require_key_from_env("GEMINI_API_KEY") if os.getenv("GEMINI_API_KEY") else _require_key_from_env("GOOGLE_API_KEY")
+        ok, err = _sec.validate_key_for_provider("gemini", api_key)
+        if not ok:
+            _sec.audit_security_event("init_client", "gemini", "GEMINI_API_KEY", success=False, detail=err)
+            print(f"\033[31mERROR: {err}\033[0m")
             print("Get your key at: https://aistudio.google.com/apikey")
             sys.exit(1)
+        _final_key_check(api_key, "gemini", "GEMINI_API_KEY")
+        _sec.audit_security_event("init_client", "gemini", "GEMINI_API_KEY", success=True)
         try:
             from google import genai
             client = genai.Client(api_key=api_key)
@@ -1030,34 +1072,52 @@ def init_client(provider: str):
             sys.exit(1)
 
     elif provider in ("kimi", "moonshot"):
-        api_key = os.getenv("KIMI_API_KEY") or os.getenv("MOONSHOT_API_KEY", "")
-        base_url = os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
-        if not api_key:
-            print("\033[31mERROR: KIMI_API_KEY not set\033[0m")
-            print("Get your key at: https://platform.moonshot.cn/")
+        if os.getenv("KIMI_API_KEY"):
+            api_key = _require_key_from_env("KIMI_API_KEY")
+            key_source = "KIMI_API_KEY"
+        else:
+            api_key = _require_key_from_env("MOONSHOT_API_KEY")
+            key_source = "MOONSHOT_API_KEY"
+        base_url = os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
+        ok, err = _sec.validate_key_for_provider("kimi", api_key)
+        if not ok:
+            _sec.audit_security_event("init_client", "kimi", key_source, success=False, detail=err)
+            print(f"\033[31mERROR: {err}\033[0m")
+            print("Get your key at: https://platform.moonshot.ai/")
             sys.exit(1)
-        # Safety: if key is OpenRouter key, redirect to OpenRouter provider
-        if api_key.startswith("sk-or-"):
-            print("\033[33mWARN: Key looks like OpenRouter (sk-or-...), switching to OpenRouter provider\033[0m")
+        # Safety: if key is OpenRouter key, redirect to OpenRouter provider only if allowed.
+        ok_openrouter, _ = _sec.validate_key_for_provider("openrouter", api_key)
+        if ok_openrouter:
+            if not _sec.allow_openrouter_proxy():
+                _sec.audit_security_event("init_client", "kimi", key_source, success=False, detail="openrouter_key_disallowed")
+                print("\033[31mERROR: Key looks like OpenRouter (sk-or-v1-...) but TOKIO_ALLOW_OPENROUTER_PROXY is not enabled\033[0m")
+                sys.exit(1)
+            _sec.audit_security_event("init_client", "kimi", key_source, success=True, detail="redirected_to_openrouter")
+            print("\033[33mWARN: Key looks like OpenRouter (sk-or-v1-...), switching to OpenRouter provider\033[0m")
             os.environ["OPENROUTER_API_KEY"] = api_key
             return init_client("openrouter")
+        _final_key_check(api_key, "kimi", key_source)
         try:
             from openai import OpenAI
             client = OpenAI(
                 base_url=base_url,
                 api_key=api_key,
             )
-            return client, "openai"  # Kimi K2 uses OpenAI-compatible API
+            return client, "openai"  # Kimi uses OpenAI-compatible API
         except ImportError:
             print("\033[31mERROR: openai not installed. Run: pip install openai\033[0m")
             sys.exit(1)
 
     elif provider == "openrouter":
-        api_key = os.getenv("OPENROUTER_API_KEY", "")
-        if not api_key:
-            print("\033[31mERROR: OPENROUTER_API_KEY not set\033[0m")
+        api_key = _require_key_from_env("OPENROUTER_API_KEY")
+        ok, err = _sec.validate_key_for_provider("openrouter", api_key)
+        if not ok:
+            _sec.audit_security_event("init_client", "openrouter", "OPENROUTER_API_KEY", success=False, detail=err)
+            print(f"\033[31mERROR: {err}\033[0m")
             print("Get your key at: https://openrouter.ai/keys")
             sys.exit(1)
+        _final_key_check(api_key, "openrouter", "OPENROUTER_API_KEY")
+        _sec.audit_security_event("init_client", "openrouter", "OPENROUTER_API_KEY", success=True)
         try:
             from openai import OpenAI
             client = OpenAI(
@@ -1179,16 +1239,23 @@ class TokioOps:
                 from tokioai_cli.router import DualModelRouter
                 dual_string = self._model
                 parts = dual_string[5:].split("+")
-                primary = parts[0] if len(parts) > 0 else "moonshotai/kimi-k2.7-code"
-                secondary = parts[1] if len(parts) > 1 else "moonshotai/kimi-k3"
+                primary = parts[0] if len(parts) > 0 else "kimi-k2.7-code"
+                secondary = parts[1] if len(parts) > 1 else "kimi-k3"
                 threshold = int(os.getenv("DUAL_THRESHOLD", "50"))
                 self._router = DualModelRouter(
                     primary_model=primary,
                     secondary_model=secondary,
                     threshold=threshold,
                 )
-                # For the actual API client, use openrouter (both models are on OpenRouter)
-                self._provider_name = "openrouter"
+                # Detect whether the dual pair lives on OpenRouter (org/name format)
+                # or directly on Moonshot (plain model ID with no slash).
+                any_openrouter_model = "/" in primary or "/" in secondary
+                if any_openrouter_model:
+                    self._provider_name = "openrouter"
+                else:
+                    # Moonshot direct: ensure we route through the kimi provider.
+                    if self._provider_name != "kimi":
+                        self._provider_name = "kimi"
                 self._model = primary  # default to primary, router overrides per-request
                 self._dual_model_string = dual_string
             except Exception as e:
@@ -1607,8 +1674,13 @@ class TokioOps:
             from google.genai import types as _gtypes
             _compact_project = (os.getenv("GEMINI_VERTEX_PROJECT") or os.getenv("VERTEX_PROJECT")
                                 or os.getenv("ANTHROPIC_VERTEX_PROJECT_ID") or "")
+            _compact_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+            _gc = None
             if _compact_project:
                 _gc = genai.Client(vertexai=True, project=_compact_project, location="global")
+            elif _compact_api_key:
+                _gc = genai.Client(api_key=_compact_api_key)
+            if _gc:
                 _gr = _gc.models.generate_content(
                     model="gemini-2.5-flash",
                     contents=summary_prompt,

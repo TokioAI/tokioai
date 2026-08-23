@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TokioAI Vivo Dashboard</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#0d1117; color:#c9d1d9; margin:0; padding:20px; }
+    h1 { color:#58a6ff; }
+    .card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; margin:12px 0; }
+    .metric { display:inline-block; margin-right:24px; }
+    .label { color:#8b949e; font-size:12px; }
+    .value { font-size:20px; font-weight:600; }
+    .event { border-bottom:1px solid #21262d; padding:6px 0; font-size:13px; }
+    .info { color:#79c0ff; }
+    .warning { color:#d29922; }
+    .error { color:#f85149; }
+    .critical { color:#ff7b72; font-weight:bold; }
+    pre { background:#0d1117; padding:10px; border-radius:6px; overflow:auto; max-height:300px; }
+  </style>
+</head>
+<body>
+  <h1>TokioAI Vivo Dashboard</h1>
+  <div id="status">Loading...</div>
+  <div class="card">
+    <h3>Recent events</h3>
+    <div id="events"></div>
+  </div>
+  <div class="card">
+    <h3>Active objects</h3>
+    <div id="objects"></div>
+  </div>
+  <div class="card">
+    <h3>Metrics (last 50)</h3>
+    <pre id="metrics"></pre>
+  </div>
+  <script>
+    const vivoDir = location.search ? new URLSearchParams(location.search).get('dir') : null;
+    function loadJSON(path) {
+      return fetch(path).then(r => r.ok ? r.json() : null).catch(() => null);
+    }
+    async function render() {
+      const base = vivoDir || '.';
+      const memory = await loadJSON(base + '/memory.json');
+      const guard = await loadJSON(base + '/token_guard.json');
+      const metricsText = await fetch(base + '/metrics.jsonl').then(r => r.ok ? r.text() : '').catch(() => '');
+      if (!memory) { document.getElementById('status').textContent = 'No vivo memory found.'; return; }
+
+      const health = memory.health_history.length ? memory.health_history[memory.health_history.length-1].score : 1.0;
+      const recent = (memory.events || []).slice(-20).reverse();
+      const cost = guard ? (guard.total_cost_usd || 0).toFixed(4) : '0.0000';
+      const g2 = guard ? (guard.gear2_calls || 0) : 0;
+      const g3 = guard ? (guard.gear3_calls || 0) : 0;
+
+      document.getElementById('status').innerHTML = `
+        <div class="card">
+          <div class="metric"><div class="label">Health</div><div class="value">${health.toFixed(2)}</div></div>
+          <div class="metric"><div class="label">Rules</div><div class="value">${memory.rules.length}</div></div>
+          <div class="metric"><div class="label">Objects</div><div class="value">${memory.objects.length}</div></div>
+          <div class="metric"><div class="label">Session cost</div><div class="value">$${cost}</div></div>
+          <div class="metric"><div class="label">Gear2 calls</div><div class="value">${g2}</div></div>
+          <div class="metric"><div class="label">Gear3 calls</div><div class="value">${g3}</div></div>
+        </div>`;
+
+      const evDiv = document.getElementById('events');
+      evDiv.innerHTML = recent.map(e => {
+        const sev = e.severity || 'info';
+        const ts = new Date(e.ts * 1000).toLocaleTimeString();
+        return `<div class="event ${sev}">${ts} [${sev.toUpperCase()}] ${e.type}: ${JSON.stringify(e.details).substring(0, 200)}</div>`;
+      }).join('');
+
+      const objDiv = document.getElementById('objects');
+      const objs = (memory.objects || []).slice(-20);
+      objDiv.innerHTML = objs.length ? objs.map(o =>
+        `<div class="event"><b>${o.label}</b> conf=${o.confidence} source=${o.source}${o.position ? ' dist='+JSON.stringify(o.position) : ''}</div>`
+      ).join('') : '<i>No active objects</i>';
+
+      document.getElementById('metrics').textContent = metricsText.split('\n').filter(Boolean).slice(-50).join('\n');
+    }
+    render();
+    setInterval(render, 5000);
+  </script>
+</body>
+</html>
