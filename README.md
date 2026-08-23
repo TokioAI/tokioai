@@ -7,7 +7,7 @@
 We build autonomous AI agents that act in the real world. Not chatbots -- operators.
 The model is the brain. We build the body.
 
-**[tokioia.com](https://tokioia.com)** | **[contact@tokioia.com](mailto:contact@tokioia.com)**
+**[tokioia.com](https://tokioia.com)** | **[[REDACTED_EMAIL_21]](mailto:[REDACTED_EMAIL_22])**
 
 ---
 
@@ -33,7 +33,7 @@ The model is the brain. We build the body.
 
 **Autonomous AI Agent for the terminal.** Cybersecurity, DevOps, Engineering, Hacking, Robotics.
 
-7 providers, 38+ tools, dual-model router, local safety layer.
+7 providers, 38+ tools, dual-model router, local safety layer, and a persistent autonomous organism mode.
 
 ### Quick Install
 
@@ -113,7 +113,9 @@ TOKIOAI_PROVIDER=ollama
 TOKIOAI_MODEL=qwen
 ```
 
-### Usage
+---
+
+## Usage
 
 ```bash
 tokio                                    # interactive mode
@@ -121,6 +123,7 @@ tokio "scan my network for open ports"   # single query
 tokio -m dual                            # dual-model auto-router
 tokio -m gemini31 "explain this CVE"     # specific model
 tokio -u "deploy the full stack"         # unlimited tool rounds
+tokio --vivo                             # autonomous organism mode (see below)
 ```
 
 **In-session commands:**
@@ -136,7 +139,9 @@ reset         Start fresh conversation
 safety        Show safety layer status
 ```
 
-### Dual-Model Router
+---
+
+## Dual-Model Router
 
 Auto-routes between cheap and smart models. Saves ~60% on API costs.
 
@@ -172,7 +177,9 @@ models                                    -> list all available
 
 You can set up multiple provider keys and switch between them seamlessly.
 
-### Slash Commands (instant, no LLM)
+---
+
+## Slash Commands (instant, no LLM)
 
 | Command | Description | Command | Description |
 |---------|-------------|---------|-------------|
@@ -183,33 +190,173 @@ You can set up multiple provider keys and switch between them seamlessly.
 | `/sitrep` | Full sit report | `/threats` | Active threats |
 | `/logs` | Entity logs | `/diff` | Git diff |
 
-### Cost Optimization
+---
+
+## TokioAI Vivo -- Autonomous Organism Mode
+
+**`tokio --vivo`** turns the CLI into a persistent, autonomous agent that runs continuously -- monitoring, reasoning, and acting on your systems without human intervention.
+
+This is not a background daemon. It is the same TokioAI agent you talk to every day, running in an autonomous loop with its own nervous system.
+
+### How It Works
+
+The Vivo mode is built on a **three-gear architecture** designed to minimize token cost while maximizing autonomy:
+
+```
+  +-----------------------------------------------------+
+  |  GEAR 1: Brainstem (Local Reflexes)                 |
+  |  - 0 tokens. Pure Python rules.                     |
+  |  - Runs every 2 seconds.                            |
+  |  - Checks: CPU, RAM, disk, services, network,       |
+  |    logs, robot sensors, GPIO, custom watchdogs.      |
+  |  - Handles 95% of routine situations instantly.      |
+  +-----------------------------------------------------+
+                          |
+                   anomaly or timer
+                          |
+  +-----------------------------------------------------+
+  |  GEAR 2: Cortex Light (Cheap LLM)                   |
+  |  - ~$0.00005 per call.                              |
+  |  - Runs every 5 minutes or on anomaly.              |
+  |  - Reviews world model, assesses health, decides    |
+  |    if anything needs attention.                      |
+  |  - Can trigger Gear 3 for novel situations.          |
+  +-----------------------------------------------------+
+                          |
+                  novel or critical
+                          |
+  +-----------------------------------------------------+
+  |  GEAR 3: Cortex Deep (Expensive LLM)                |
+  |  - ~$0.005-0.02 per call.                           |
+  |  - Only for novel situations, complex reasoning,    |
+  |    or when Gear 2 escalates.                         |
+  |  - Plans multi-step solutions, writes new rules.    |
+  +-----------------------------------------------------+
+```
+
+### Key Benefits
+
+**1. Near-zero operating cost**
+- Gear 1 (local rules) handles 95% of events -- zero tokens consumed.
+- Gear 2 uses a cheap 8B model -- fractions of a cent per call.
+- Gear 3 only fires on genuine anomalies -- maybe 2-5 times per day.
+- A healthy system running 24/7 costs **cents per day**, not dollars.
+
+**2. Learns and adapts**
+- World model is persistent across restarts (`~/.tokioai/vivo/memory.json`).
+- Gear 3 can write new local rules that Gear 1 executes from then on.
+- The system gets smarter over time without retraining.
+
+**3. Graduated autonomy**
+- **Level 0 (Simulation)**: Observes and logs. Nothing executed. Perfect for testing.
+- **Level 1 (Assisted)**: Alerts you before any destructive action. You approve.
+- **Level 2 (Trusted)**: Executes only whitelisted destructive commands (restart services, reboot, etc.).
+- **Level 3 (Full)**: Full autonomy. Use with extreme caution.
+
+**4. Safety by design**
+- Kill switch: `touch ~/.tokioai/vivo/STOP` or `tokio --vivo-stop` halts everything.
+- Blocked commands list: `rm -rf /`, fork bombs, `dd`, `mkfs` -- never executed.
+- Rate limits: max actions per hour, max destructive per hour.
+- Token guard: hard budget limits per hour/session/day.
+- Dry-run by default: you must explicitly pass `--no-dry-run` to execute.
+
+**5. Full observability**
+- Real-time dashboard at `~/.tokioai/vivo/dashboard.html`.
+- All actions logged to `~/.tokioai/vivo/actions.log` (JSONL).
+- Metrics persisted to `~/.tokioai/vivo/metrics.jsonl`.
+- CLI reports at configurable intervals.
+
+### Quick Start (Vivo)
+
+```bash
+# Check status
+tokio --vivo-status
+
+# Simulation mode (safe, dry-run)
+tokio --vivo --objective "keep my server healthy" --autonomy 0
+
+# Assisted mode (asks before destructive actions)
+tokio --vivo --objective "keep my server healthy" --autonomy 1 --no-dry-run
+
+# Trusted mode (auto-executes whitelisted commands)
+tokio --vivo --objective "monitor the robot and restart if stuck" --autonomy 2 --no-dry-run
+
+# Stop
+tokio --vivo-stop
+```
+
+### Vivo Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--objective TEXT` | "keep system healthy" | High-level mission statement |
+| `--autonomy {0,1,2,3}` | 1 | Autonomy level |
+| `--dry-run` / `--no-dry-run` | dry-run | Simulate or execute |
+| `--budget-hour USD` | 0.50 | Hourly budget limit |
+| `--budget-session USD` | 10.00 | Session budget limit |
+| `--gear2-model MODEL` | llama-3.1-8b-instruct | Cheap model for periodic review |
+| `--gear3-model MODEL` | kimi-k3 | Expensive model for deep reasoning |
+| `--tick S` | 2 | Brainstem loop interval (seconds) |
+| `--cortex-interval S` | 300 | Gear 2 review interval (seconds) |
+| `--report-every S` | 60 | CLI report interval (seconds) |
+
+### Vivo Data
+
+All state persists in `~/.tokioai/vivo/`:
+
+```
+~/.tokioai/vivo/
+  config.yaml       # Configuration
+  memory.json       # World model (objects, events, health, learned rules)
+  token_guard.json  # Token spend tracking
+  actions.log       # All actions executed (JSONL)
+  metrics.jsonl     # Periodic metrics
+  state.yaml        # Runtime state
+  STOP              # Kill switch (create this file to halt)
+  vivo.pid          # PID file for the running process
+```
+
+### Use Cases
+
+- **Server watchdog**: Monitor CPU, RAM, disk, services. Restart what dies. Alert on anomalies.
+- **Robot guardian**: Watch PiCar-X sensors, detect stuck states, auto-recover navigation.
+- **Security patrol**: Check auth logs, detect brute force, auto-ban IPs, monitor WAF.
+- **DevOps sentinel**: Watch CI/CD pipelines, container health, auto-rollback on failure.
+- **Smart home brain**: Monitor IoT sensors, adjust based on rules, learn patterns over time.
+
+### Architecture (Vivo)
+
+```
+tokioai_cli/vivo/
+  config.py          # Configuration and paths
+  token_guard.py     # Budget and cost tracking
+  safety.py          # Whitelist, kill switch, rate limits
+  world_memory.py    # Persistent world model
+  watchdogs.py       # Local sensors (0 tokens)
+  brainstem.py       # Reflex rules engine
+  cortex.py          # Gear 2/3 reasoning
+  llm_client.py      # LLM client (OpenRouter/direct)
+  action_executor.py # Action execution with safety
+  scheduler.py       # Periodic tasks
+  vivo_loop.py       # Main loop
+  cli_plugin.py      # CLI integration
+  templates/
+    dashboard.html   # Static dashboard
+    dashboard_ws.html# WebSocket live dashboard
+```
+
+---
+
+## Cost Optimization
 
 TokioAI optimizes costs at every level:
 
 1. **Dual-model router** -- routes ~70% of requests to the cheaper model
 2. **Smart compaction** -- uses Gemini Flash (near-free) to summarize old context, not your expensive model
-3. **Memory optimizer** -- only sends recent/relevant memory entries, archives old ones
+3. **Memory optimizer** -- only sends recent/relevant memory entries, archives old ones (60-80% token reduction)
 4. **Token tracking** -- per-model cost breakdown in `stats`
 5. **Context limits** -- auto-compacts at 40k tokens, keeps last 10 messages
-
-### Architecture
-
-```
-~/.tokioai/
-  .env                    <- credentials (from --setup)
-  memory.md               <- persistent memory across sessions
-  tasks.json              <- task tracker for continuity
-
-tokioai_cli/
-  interactive.py          <- UI: banner, commands, streaming, markdown renderer
-  ops.py                  <- LLM engine: tool execution, 7 providers, compaction
-  router.py               <- dual-model router (complexity classifier)
-  safety.py               <- local PII/secrets sanitization layer
-  security_config.py      <- provider validation, key audit, security policies
-  memory_optimizer.py     <- smart context compression (60-80% token reduction)
-  .env.example            <- fully documented config template
-```
+6. **Vivo three-gear system** -- 95% of autonomous operation uses zero tokens
 
 ---
 
@@ -230,35 +377,48 @@ TokioAI runs a **local safety layer** (`safety.py`) that scans **every outgoing 
 - Key whitespace/length sanity checks
 - OpenRouter proxy detection (prevents accidental key leakage)
 - Provider lock (`TOKIO_PROVIDER_LOCK`) for shared environments
-- Audit log at `~/.tokioai/security.log`
+- Audit log at `~/.tokioai/security_audit.log`
 
-**Commands:**
+**In-session:**
 ```
-safety              # show status and last redaction summary
-safety allow <val>  # bypass redaction for a known-safe value
+safety          Show safety layer status and redaction stats
+safety test     Test the safety layer with sample data
+security        Show security audit report
 ```
-
-**Environment variables:**
-```bash
-TOKIO_SAFETY_PARANOID=1                    # raise detection sensitivity
-TOKIO_SAFETY_BLOCK=api_key,password        # block if these categories found
-TOKIO_SECURITY_STRICT=1                    # reject ambiguous configs
-TOKIO_PROVIDER_LOCK=kimi                   # lock to one provider
-```
-
-This is **defence in depth**, not a guarantee. Always review code before pasting, and rotate leaked credentials immediately.
 
 ---
 
-## Other Projects
+## Architecture
 
-| Repo | Description |
-|------|-------------|
-| [tokioai-v1.8](https://github.com/TokioAI/tokioai-v1.8) | Autonomous AI Agent Framework -- 30+ tools, CLI + REST API + Telegram Bot |
-| [tokioai-website](https://github.com/TokioAI/tokioai-website) | [tokioia.com](https://tokioia.com) |
+```
+~/.tokioai/
+  .env                    <- credentials (from --setup)
+  memory.md               <- persistent memory across sessions
+  tasks.json              <- task tracker for continuity
+  vivo/                   <- autonomous organism state
+  security_audit.log      <- security event log
+
+tokioai_cli/
+  interactive.py          <- UI: banner, commands, streaming, markdown renderer
+  ops.py                  <- LLM engine: tool execution, 7 providers, compaction
+  router.py               <- dual-model router (complexity classifier)
+  safety.py               <- local PII/secrets sanitization layer
+  security_config.py      <- provider validation, key audit, security policies
+  memory_optimizer.py     <- smart context compression (60-80% token reduction)
+  .env.example            <- fully documented config template
+  vivo/                   <- autonomous organism mode (see above)
+```
+
+---
+
+## Requirements
+
+- Python 3.10+
+- One API key from any supported provider
+- Linux, macOS, or WSL
 
 ---
 
 ## License
 
-MIT
+[MIT](LICENSE)

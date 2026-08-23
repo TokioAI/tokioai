@@ -29,6 +29,9 @@ build/
 Thumbs.db
 tokioai_cli/ops.py.bak.openrouter
 
+# TokioWake (experimental - not for release)
+tokiowake/
+
 # Demos / media / recordings
 demos/
 demo_terminal*.py
