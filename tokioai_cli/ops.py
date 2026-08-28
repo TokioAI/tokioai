@@ -111,6 +111,21 @@ MODEL_ALIASES = {
     "or-gemini31": "google/gemini-3.1-pro-preview",
     "or-llama": "meta-llama/llama-3.1-405b-instruct",
     "or-deepseek": "deepseek/deepseek-r1",
+    # ── TokioAI (own routing — maps to best backend per tier) ──
+    "tkai": "tokioai-max",
+    "tkai-max": "tokioai-max",
+    "tokioai-max": "tokioai-max",
+    "tkai-code": "tokioai-code",
+    "tokioai-code": "tokioai-code",
+    "tkai-fast": "tokioai-fast",
+    "tokioai-fast": "tokioai-fast",
+    # ── Dual-Model Router: TokioAI (fast+max) ──
+    "dual-tkai": "dual:tokioai-fast+tokioai-max",
+    "tkai-dual": "dual:tokioai-fast+tokioai-max",
+    # ── Dual-Model Router: Vertex Claude (sonnet+opus) ──
+    "dual-vertex": "dual:claude-sonnet-4-6+claude-opus-4-6",
+    "dual-claude": "dual:claude-sonnet-4-6+claude-opus-4-6",
+    "sonnet-opus": "dual:claude-sonnet-4-6+claude-opus-4-6",
 }
 
 
@@ -122,7 +137,7 @@ def resolve_model(name: str) -> str:
 def list_aliases() -> dict[str, list[str]]:
     """Group aliases by provider for display."""
     groups = {
-        "Claude": [], "OpenAI": [], "Gemini": [],
+        "TokioAI": [], "Claude": [], "OpenAI": [], "Gemini": [],
         "Kimi": [], "Ollama": [], "OpenRouter": [],
     }
     seen = set()
@@ -130,7 +145,9 @@ def list_aliases() -> dict[str, list[str]]:
         if model in seen:
             continue
         seen.add(model)
-        if "claude" in model:
+        if model.startswith("tokioai-"):
+            groups["TokioAI"].append((alias, model))
+        elif "claude" in model:
             groups["Claude"].append((alias, model))
         elif "gpt" in model or model in ("o1", "o3", "o3-mini"):
             groups["OpenAI"].append((alias, model))
@@ -143,6 +160,29 @@ def list_aliases() -> dict[str, list[str]]:
         elif "/" in model:
             groups["OpenRouter"].append((alias, model))
     return groups
+
+
+# ---------------------------------------------------------------------------
+# TokioAI Provider — own routing layer
+# ---------------------------------------------------------------------------
+
+# TokioAI tier -> (backend_provider, backend_model)
+# This mapping defines which real backend each TokioAI tier uses.
+# Change these to reroute all TokioAI aliases without touching user config.
+TOKIOAI_ROUTING = {
+    "tokioai-max":  ("tokioai",  "kimi-k3"),               # flagship reasoning
+    "tokioai-code": ("tokioai",  "kimi-k2.7-code"),        # code specialist
+    "tokioai-fast": ("tokioai",  "kimi-k3"),               # fast + capable
+}
+
+
+def resolve_tokioai_model(model: str) -> tuple[str, str]:
+    """Resolve a tokioai-* model to (real_provider, real_model).
+    Returns (None, None) if not a tokioai model."""
+    route = TOKIOAI_ROUTING.get(model)
+    if route:
+        return route
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +199,7 @@ def detect_provider() -> str:
         "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
         "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"),
+        "TOKIOAI_API_KEY": os.getenv("TOKIOAI_API_KEY"),
         "KIMI_API_KEY": os.getenv("KIMI_API_KEY") or os.getenv("MOONSHOT_API_KEY"),
         "MOONSHOT_API_KEY": os.getenv("MOONSHOT_API_KEY"),
         "OPENROUTER_API_KEY": os.getenv("OPENROUTER_API_KEY"),
@@ -206,6 +247,7 @@ def detect_model() -> str:
         "kimi": "kimi-k2-0711-preview",
         "openrouter": "anthropic/claude-opus-4",
         "ollama": os.getenv("OLLAMA_MODEL", "qwen2.5:32b"),
+        "tokioai": "tokioai-max",
     }
     return defaults.get(provider, "claude-opus-4-6")
 
@@ -960,7 +1002,38 @@ def init_client(provider: str, *, allow_key_from_env: bool = True, required_key_
             print(f"\033[31mERROR: {key_source} for provider '{provider_name}' must start with '{required_key_prefix}'\033[0m")
             sys.exit(1)
 
-    if provider in ("anthropic-vertex", "claude-vertex", "vertex"):
+    # ── TokioAI Provider ──
+    # First-class provider with own API key and base URL.
+    # Uses TOKIOAI_API_KEY (falls back to KIMI_API_KEY for backwards compat).
+    # Uses TOKIOAI_BASE_URL (default: api.moonshot.ai/v1 — will switch to
+    # router.tokioai.com when the TokioAI gateway is deployed).
+    if provider == "tokioai":
+        api_key = os.getenv("TOKIOAI_API_KEY") or os.getenv("KIMI_API_KEY") or os.getenv("MOONSHOT_API_KEY")
+        if not api_key:
+            print("\033[31mERROR: TOKIOAI_API_KEY not set. Add it to ~/.tokioai/.env\033[0m")
+            print("  TOKIOAI_API_KEY=sk-your-key-here")
+            sys.exit(1)
+        key_source = "TOKIOAI_API_KEY" if os.getenv("TOKIOAI_API_KEY") else "KIMI_API_KEY"
+        base_url = os.getenv("TOKIOAI_BASE_URL", "https://api.moonshot.ai/v1")
+        ok, err = _sec.validate_key_for_provider("tokioai", api_key)
+        if not ok:
+            _sec.audit_security_event("init_client", "tokioai", key_source, success=False, detail=err)
+            print(f"\033[31mERROR: {err}\033[0m")
+            sys.exit(1)
+        _final_key_check(api_key, "tokioai", key_source)
+        _sec.audit_security_event("init_client", "tokioai", key_source, success=True)
+        try:
+            from openai import OpenAI
+            client = OpenAI(
+                base_url=base_url,
+                api_key=api_key,
+            )
+            return client, "openai"  # TokioAI uses OpenAI-compatible API
+        except ImportError:
+            print("\033[31mERROR: openai not installed. Run: pip install openai\033[0m")
+            sys.exit(1)
+
+    elif provider in ("anthropic-vertex", "claude-vertex", "vertex"):
         project = VERTEX_PROJECT
         region = VERTEX_REGION
         if not project:
@@ -1222,10 +1295,36 @@ class TokioOps:
                 "openrouter": "anthropic/claude-opus-4",
                 "ollama": os.getenv("OLLAMA_MODEL", "qwen2.5:32b"),
                 "local": os.getenv("OLLAMA_MODEL", "qwen2.5:32b"),
+                "tokioai": "tokioai-max",
             }
             self._model = defaults.get(provider, MODEL)
         else:
             self._model = model or MODEL
+
+        # ── TokioAI provider resolution ──
+        # If provider is "tokioai", resolve model to real backend.
+        # Skip if model is a dual string — dual handler resolves tokioai tiers itself.
+        self._tokioai_tier = None  # tracks original tokioai-* tier name
+        _is_dual_string = isinstance(self._model, str) and self._model.startswith("dual:")
+        if self._provider_name == "tokioai" and not _is_dual_string:
+            self._tokioai_tier = self._model  # e.g. "tokioai-fast"
+            real_provider, real_model = resolve_tokioai_model(self._model)
+            if real_provider:
+                self._provider_name = real_provider
+                self._model = real_model
+            else:
+                # Unknown tokioai tier, default to max
+                self._tokioai_tier = "tokioai-max"
+                real_provider, real_model = resolve_tokioai_model("tokioai-max")
+                self._provider_name = real_provider
+                self._model = real_model
+        elif self._model and self._model.startswith("tokioai-") and not _is_dual_string:
+            # Model is a tokioai tier but provider wasn't set to "tokioai"
+            self._tokioai_tier = self._model
+            real_provider, real_model = resolve_tokioai_model(self._model)
+            if real_provider:
+                self._provider_name = real_provider
+                self._model = real_model
 
         # ── Dual-Model Router ──
         # If model starts with "dual:", parse it and set up the router
@@ -1241,21 +1340,47 @@ class TokioOps:
                 parts = dual_string[5:].split("+")
                 primary = parts[0] if len(parts) > 0 else "kimi-k2.7-code"
                 secondary = parts[1] if len(parts) > 1 else "kimi-k3"
+
+                # Resolve tokioai-* models in dual pairs to real backends
+                p_real_prov, p_real_model = resolve_tokioai_model(primary)
+                s_real_prov, s_real_model = resolve_tokioai_model(secondary)
+                if p_real_prov:
+                    primary = p_real_model
+                if s_real_prov:
+                    secondary = s_real_model
+                # Use the primary's resolved provider if tokioai
+                if p_real_prov:
+                    self._provider_name = p_real_prov
+
                 threshold = int(os.getenv("DUAL_THRESHOLD", "50"))
                 self._router = DualModelRouter(
                     primary_model=primary,
                     secondary_model=secondary,
                     threshold=threshold,
                 )
-                # Detect whether the dual pair lives on OpenRouter (org/name format)
-                # or directly on Moonshot (plain model ID with no slash).
+                # Detect provider for dual pair:
+                # 1. OpenRouter models (org/name format with /)
+                # 2. Claude models on Vertex
+                # 3. Kimi/Moonshot models
+                # 4. Keep existing provider if explicitly set
                 any_openrouter_model = "/" in primary or "/" in secondary
-                if any_openrouter_model:
+                any_claude_model = "claude" in primary or "claude" in secondary
+                any_kimi_model = "kimi" in primary or "moonshot" in primary
+                # If TokioAI tier was in the dual string, keep tokioai provider
+                any_tokioai_tier = "tokioai-" in (self._dual_model_string or dual_string)
+                if any_tokioai_tier:
+                    self._provider_name = "tokioai"
+                elif any_openrouter_model:
                     self._provider_name = "openrouter"
-                else:
-                    # Moonshot direct: ensure we route through the kimi provider.
-                    if self._provider_name != "kimi":
+                elif any_claude_model:
+                    # Keep vertex if already set, or use anthropic-vertex as default for Claude
+                    if self._provider_name not in ("anthropic-vertex", "anthropic"):
+                        self._provider_name = "anthropic-vertex"
+                elif any_kimi_model:
+                    if self._provider_name not in ("kimi",):
                         self._provider_name = "kimi"
+                # else: keep current provider (user explicitly chose it)
+
                 self._model = primary  # default to primary, router overrides per-request
                 self._dual_model_string = dual_string
             except Exception as e:
@@ -1432,15 +1557,33 @@ class TokioOps:
         return self.model.split("/")[-1]
 
     @property
+    def tokioai_tier(self) -> str | None:
+        """Return the TokioAI tier name if this is a TokioAI-routed model."""
+        return getattr(self, "_tokioai_tier", None)
+
+    @property
     def model_display_name(self) -> str:
         """User-friendly model name for the current config."""
         if self._dual_model_string:
             return "Dual Router (K2.7 + K3)"
+        tier = getattr(self, "_tokioai_tier", None)
+        if tier:
+            # Show short tier + backend, e.g. "tkai-fast (kimi-k3)"
+            short = tier.replace("tokioai-", "tkai-")
+            backend = self.model.split("/")[-1]
+            return f"{short} ({backend})"
         return self.model.split("/")[-1]
 
     @property
     def provider_display_name(self) -> str:
         """User-friendly provider name."""
+        tier = getattr(self, "_tokioai_tier", None)
+        if tier:
+            return "TokioAI"
+        # Dual mode with TokioAI tiers in the model string
+        dual_str = getattr(self, "_dual_model_string", None)
+        if dual_str and "tokioai-" in dual_str:
+            return "TokioAI"
         mapping = {
             "anthropic-vertex": "Vertex AI (Claude)",
             "claude-vertex": "Vertex AI (Claude)",
@@ -1453,6 +1596,7 @@ class TokioOps:
             "moonshot": "Moonshot AI",
             "openrouter": "OpenRouter",
             "ollama": "Ollama",
+            "tokioai": "TokioAI",
         }
         return mapping.get(self._provider_name, self._provider_name)
 
@@ -1471,11 +1615,73 @@ class TokioOps:
         return f"{self._total_input_tokens:,} in / {self._total_output_tokens:,} out"
 
     def switch_model(self, new_model: str, new_provider: str = None):
-        """Switch to a different model (and optionally provider) at runtime."""
-        if new_provider and new_provider != self._provider_name:
-            self._provider_name = new_provider
-            self._client, self._client_type = init_client(new_provider)
-        self.model = new_model  # use setter so dual string is reset
+        """Switch to a different model (and optionally provider) at runtime.
+        
+        Supports:
+        - Single model: switch_model("kimi-k3", "kimi")
+        - TokioAI routing: switch_model("tokioai-fast", "tokioai")
+        - Dual mode: switch_model("dual:claude-sonnet-4-6+claude-opus-4-6")
+        """
+        # Handle dual mode setup
+        if isinstance(new_model, str) and new_model.startswith("dual:"):
+            try:
+                from tokioai_cli.router import DualModelRouter
+                parts = new_model[5:].split("+")
+                primary = parts[0] if len(parts) > 0 else "kimi-k2.7-code"
+                secondary = parts[1] if len(parts) > 1 else "kimi-k3"
+
+                # Resolve tokioai-* models in dual pairs
+                p_real_prov, p_real_model = resolve_tokioai_model(primary)
+                s_real_prov, s_real_model = resolve_tokioai_model(secondary)
+                if p_real_prov:
+                    primary = p_real_model
+                if s_real_prov:
+                    secondary = s_real_model
+
+                threshold = int(os.getenv("DUAL_THRESHOLD", "50"))
+                self._router = DualModelRouter(primary_model=primary, secondary_model=secondary, threshold=threshold)
+                self._dual_model_string = new_model
+                self._model = primary
+
+                # Determine provider
+                if p_real_prov:
+                    actual_provider = p_real_prov
+                elif "/" in primary or "/" in secondary:
+                    actual_provider = "openrouter"
+                elif "claude" in primary:
+                    actual_provider = "anthropic-vertex"
+                elif "kimi" in primary:
+                    actual_provider = "kimi"
+                else:
+                    actual_provider = new_provider or self._provider_name
+
+                if actual_provider != self._provider_name:
+                    self._provider_name = actual_provider
+                    self._client, self._client_type = init_client(actual_provider)
+                return
+            except Exception as e:
+                print(f"WARNING: Failed to init DualModelRouter: {e}")
+
+        # Resolve tokioai provider + model to real backend
+        actual_provider = new_provider
+        actual_model = new_model
+        if new_provider == "tokioai" or (not new_provider and new_model.startswith("tokioai-")):
+            self._tokioai_tier = new_model  # preserve tier name
+            real_prov, real_model = resolve_tokioai_model(new_model)
+            if real_prov:
+                actual_provider = real_prov
+                actual_model = real_model
+        else:
+            self._tokioai_tier = None  # clear tier when switching to non-tokioai model
+
+        if actual_provider and actual_provider != self._provider_name:
+            old_client_type = self._client_type
+            self._provider_name = actual_provider
+            self._client, self._client_type = init_client(actual_provider)
+            # Convert messages when switching between incompatible formats
+            if old_client_type != self._client_type and self._messages:
+                self._convert_messages_for_provider(self._client_type)
+        self.model = actual_model  # use setter so dual string is reset
         # If leaving dual mode, tear down the router
         if self._dual_model_string is None:
             self._router = None
@@ -1517,6 +1723,152 @@ class TokioOps:
                 elif hasattr(item, "type") and item.type in ("tool_use", "tool_result"):
                     return True
         return False
+
+    def _convert_messages_for_provider(self, target_type: str):
+        """Convert message history between OpenAI and Anthropic formats.
+
+        Called when switching between providers that use incompatible message formats.
+        - OpenAI/Kimi: tool calls use {"role":"assistant","tool_calls":[...]} + {"role":"tool","tool_call_id":...}
+        - Anthropic: tool calls use {"role":"assistant","content":[{"type":"tool_use",...}]} + {"role":"user","content":[{"type":"tool_result",...}]}
+
+        This prevents 400 errors when switching from e.g. dual-kimi to opus (Vertex).
+        """
+        if not self._messages:
+            return
+
+        if target_type == "anthropic":
+            # Convert OpenAI-format messages to Anthropic format
+            new_msgs = []
+            pending_tool_results = {}  # tool_call_id -> result content
+
+            # First pass: collect tool results
+            for msg in self._messages:
+                if msg.get("role") == "tool" and msg.get("tool_call_id"):
+                    pending_tool_results[msg["tool_call_id"]] = msg.get("content", "")
+
+            # Second pass: convert
+            for msg in self._messages:
+                role = msg.get("role", "")
+
+                if role == "tool":
+                    # Skip — these get merged into user messages with tool_result blocks
+                    continue
+
+                if role == "assistant" and msg.get("tool_calls"):
+                    # Convert tool_calls to Anthropic content blocks
+                    content_blocks = []
+                    # Include any text content first
+                    text = msg.get("content", "")
+                    if isinstance(text, str) and text.strip():
+                        content_blocks.append({"type": "text", "text": text})
+                    # Convert each tool_call to a tool_use block
+                    for tc in msg["tool_calls"]:
+                        tc_id = tc.get("id", "")
+                        fn = tc.get("function", {})
+                        fn_name = fn.get("name", "unknown")
+                        fn_args_raw = fn.get("arguments", "{}")
+                        try:
+                            fn_args = json.loads(fn_args_raw) if isinstance(fn_args_raw, str) else fn_args_raw
+                        except (json.JSONDecodeError, TypeError):
+                            fn_args = {}
+                        content_blocks.append({
+                            "type": "tool_use",
+                            "id": tc_id,
+                            "name": fn_name,
+                            "input": fn_args,
+                        })
+                    new_msgs.append({"role": "assistant", "content": content_blocks})
+                    # Now create the corresponding user message with tool_results
+                    result_blocks = []
+                    for tc in msg["tool_calls"]:
+                        tc_id = tc.get("id", "")
+                        result_content = pending_tool_results.get(tc_id, "[result unavailable — provider switch]")
+                        result_blocks.append({
+                            "type": "tool_result",
+                            "tool_use_id": tc_id,
+                            "content": result_content if isinstance(result_content, str) else str(result_content),
+                        })
+                    if result_blocks:
+                        new_msgs.append({"role": "user", "content": result_blocks})
+
+                elif role == "assistant" and isinstance(msg.get("content"), list):
+                    # Already Anthropic format — keep as-is
+                    new_msgs.append(msg)
+
+                elif role == "user":
+                    # Plain user messages — keep as-is
+                    new_msgs.append(msg)
+
+                elif role == "assistant":
+                    # Plain text assistant — keep as-is
+                    new_msgs.append(msg)
+
+                else:
+                    # Unknown role — keep
+                    new_msgs.append(msg)
+
+            self._messages = new_msgs
+
+        elif target_type == "openai":
+            # Convert Anthropic-format messages to OpenAI format
+            new_msgs = []
+            for msg in self._messages:
+                role = msg.get("role", "")
+
+                if role == "assistant" and isinstance(msg.get("content"), list):
+                    text_parts = []
+                    tool_calls = []
+                    for item in msg["content"]:
+                        if isinstance(item, dict):
+                            if item.get("type") == "text":
+                                text_parts.append(item.get("text", ""))
+                            elif item.get("type") == "tool_use":
+                                tool_calls.append({
+                                    "id": item.get("id", ""),
+                                    "type": "function",
+                                    "function": {
+                                        "name": item.get("name", "unknown"),
+                                        "arguments": json.dumps(item.get("input", {})),
+                                    },
+                                })
+                        elif hasattr(item, "type"):
+                            if getattr(item, "type", "") == "text":
+                                text_parts.append(getattr(item, "text", ""))
+                            elif getattr(item, "type", "") == "tool_use":
+                                tool_calls.append({
+                                    "id": getattr(item, "id", ""),
+                                    "type": "function",
+                                    "function": {
+                                        "name": getattr(item, "name", "unknown"),
+                                        "arguments": json.dumps(getattr(item, "input", {})),
+                                    },
+                                })
+                    text = "\n".join(text_parts).strip()
+                    if tool_calls:
+                        new_msgs.append({"role": "assistant", "content": text or None, "tool_calls": tool_calls})
+                    else:
+                        new_msgs.append({"role": "assistant", "content": text or ""})
+
+                elif role == "user" and isinstance(msg.get("content"), list):
+                    # Anthropic tool_result blocks -> OpenAI tool messages
+                    text_parts = []
+                    for item in msg["content"]:
+                        if isinstance(item, dict):
+                            if item.get("type") == "tool_result":
+                                new_msgs.append({
+                                    "role": "tool",
+                                    "tool_call_id": item.get("tool_use_id", ""),
+                                    "content": item.get("content", "") if isinstance(item.get("content"), str) else str(item.get("content", "")),
+                                })
+                            elif item.get("type") == "text":
+                                text_parts.append(item.get("text", ""))
+                    if text_parts:
+                        new_msgs.append({"role": "user", "content": "\n".join(text_parts)})
+
+                else:
+                    new_msgs.append(msg)
+
+            self._messages = new_msgs
 
     def _fix_orphaned_tool_use(self):
         """Scan messages and inject missing tool_result blocks to prevent API errors."""
@@ -1749,9 +2101,18 @@ class TokioOps:
                         _rl += " | Plan: " + _rt["plan"]
                     _rlines.append(_rl)
                 _recovery_parts.append("ACTIVE TASKS:\n" + "\n".join(_rlines))
-            _rmem = _load_memory()
-            if _rmem and len(_rmem) < 3000:
-                _recovery_parts.append("MEMORY SNAPSHOT:\n" + _rmem[:2000])
+            # Use optimized recovery context (pinned infra + recent entries)
+            # NOT raw memory (which is 100K+ and would never fit)
+            try:
+                from tokioai_cli.memory_optimizer import build_compaction_recovery
+                _recovery_mem = build_compaction_recovery()
+                if _recovery_mem:
+                    _recovery_parts.append("MEMORY SNAPSHOT:\n" + _recovery_mem)
+            except Exception:
+                # Fallback: at least include first 3000 chars of raw memory
+                _rmem = _load_memory()
+                if _rmem:
+                    _recovery_parts.append("MEMORY SNAPSHOT:\n" + _rmem[:3000])
             if _recovery_parts:
                 _recovery_msg = "[CONTEXT RECOVERY after compaction]\n" + "\n\n".join(_recovery_parts)
                 self._messages.insert(0, {"role": "user", "content": _recovery_msg})
@@ -1772,6 +2133,9 @@ class TokioOps:
             stream: Enable streaming mode (token-by-token output).
         """
         # ── Dual-Model Router: pick the right model for this request ──
+        saved_client = None
+        saved_client_type = None
+        saved_provider = None
         if self._router:
             has_tool = any(self._has_tool_use(m) for m in self._messages[-2:]) if self._messages else False
             routed_model = self._router.route(
@@ -1791,6 +2155,35 @@ class TokioOps:
             # Temporarily set the model for this request
             saved_model = self._model
             self._model = routed_model
+
+            # ── Cross-provider dual mode ──
+            # When the routed model requires a different provider than the current one,
+            # swap client temporarily. This enables e.g. dual:kimi-k3+claude-opus-4-6
+            needed_provider = self._provider_name
+            if "claude" in routed_model and self._client_type != "anthropic":
+                needed_provider = "anthropic-vertex"
+            elif ("kimi" in routed_model or "moonshot" in routed_model) and self._client_type != "openai":
+                # If using TokioAI provider, keep it (same backend, own key/url)
+                if self._tokioai_tier or self._provider_name == "tokioai":
+                    needed_provider = "tokioai"
+                else:
+                    needed_provider = "kimi"
+            elif "/" in routed_model and not routed_model.startswith("models/"):
+                needed_provider = "openrouter"
+
+            if needed_provider != self._provider_name:
+                saved_client = self._client
+                saved_client_type = self._client_type
+                saved_provider = self._provider_name
+                try:
+                    self._client, self._client_type = init_client(needed_provider)
+                    self._provider_name = needed_provider
+                    # Convert messages if format changed (e.g. kimi->vertex in cross-provider dual)
+                    if saved_client_type != self._client_type and self._messages:
+                        self._convert_messages_for_provider(self._client_type)
+                except Exception:
+                    # Fallback: keep current client
+                    pass
 
         # Snapshot tokens BEFORE call for router delta tracking
         pre_input = self._total_input_tokens
@@ -1812,13 +2205,21 @@ class TokioOps:
             else:
                 result = f"ERROR: Unknown client type {self._client_type}"
         finally:
-            # ── Record router usage and restore model ──
+            # ── Record router usage and restore model + client ──
             if self._router:
                 delta_in = self._total_input_tokens - pre_input
                 delta_out = self._total_output_tokens - pre_output
                 if delta_in > 0 or delta_out > 0:
                     self._router.record_usage(routed_model, delta_in, delta_out)
                 self._model = saved_model  # restore to "dual:..." display name
+                # Restore client if we swapped for cross-provider routing
+                if saved_client is not None:
+                    # Convert messages back to the original provider's format
+                    if saved_client_type != self._client_type and self._messages:
+                        self._convert_messages_for_provider(saved_client_type)
+                    self._client = saved_client
+                    self._client_type = saved_client_type
+                    self._provider_name = saved_provider
 
         return result
 
@@ -2389,6 +2790,10 @@ class TokioOps:
             if stream_obj is None:
                 continue
 
+            # Snapshot for post-stream token estimation
+            self._pre_stream_input_tokens = self._total_input_tokens
+            self._pre_stream_output_tokens = self._total_output_tokens
+
             # Consume stream
             text_chunks = []
             tool_calls_acc = {}  # id -> {name, arguments}
@@ -2436,6 +2841,17 @@ class TokioOps:
                 raise
 
             full_text = "".join(text_chunks)
+
+            # Estimate token usage if the stream didn't report it in chunks
+            # (common with Kimi/Moonshot, some OpenRouter providers)
+            pre_total_in = getattr(self, '_pre_stream_input_tokens', 0)
+            pre_total_out = getattr(self, '_pre_stream_output_tokens', 0)
+            if self._total_input_tokens == pre_total_in and self._total_output_tokens == pre_total_out:
+                # No tokens were reported during stream — estimate
+                est_context = sum(len(str(m.get("content", ""))) for m in self._messages)
+                est_system = len(self._safe_system_prompt())
+                self._total_input_tokens += (est_context + est_system) // 4
+                self._total_output_tokens += len(full_text) // 4
 
             # Max tokens truncation
             if finish_reason == "length" and full_text.strip():

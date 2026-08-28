@@ -276,8 +276,15 @@ def _model_badge_for(ops: TokioOps) -> str:
         return ops.router_badge_dual
     # Single-model badge
     model = ops.model
+    tier = getattr(ops, "_tokioai_tier", None)
     color_bg = "\033[48;5;24m\033[1m"
-    if "kimi-k3" in model or model == "moonshotai/kimi-k3":
+    if tier:
+        # TokioAI branded badge — distinct purple/magenta
+        color_bg = "\033[48;5;99m\033[1m"
+        # Show tier short name: tkai-fast, tkai-code, tkai-max
+        short = tier.replace("tokioai-", "tkai-")
+        return f"{color_bg} {short} {C_RESET}"
+    elif "kimi-k3" in model or model == "moonshotai/kimi-k3":
         color_bg = "\033[48;5;94m\033[1m"
     elif "kimi" in model or "moonshot" in model:
         color_bg = "\033[48;5;22m\033[1m"
@@ -1401,28 +1408,48 @@ def show_banner(model: str, provider: str, mode_parts: list[str] | None = None):
 
     _safe_print(f"    {C_BOLD}{C_BRIGHT_WHITE}  TokioAI{C_RESET} {C_GRAY}v5.2{C_RESET}")
     if model.startswith("dual:"):
+        from tokioai_cli.ops import resolve_tokioai_model as _resolve_tkai_dual
         parts = model[5:].split("+")
-        p_name = parts[0].split("/")[-1] if parts else "?"
-        s_name = parts[1].split("/")[-1] if len(parts) > 1 else "?"
+        p_raw = parts[0] if parts else "?"
+        s_raw = parts[1] if len(parts) > 1 else "?"
+        # Resolve tokioai-* tiers in dual pair to show real backend names
+        _p_prov, _p_model = _resolve_tkai_dual(p_raw)
+        _s_prov, _s_model = _resolve_tkai_dual(s_raw)
+        p_name = (_p_model or p_raw).split("/")[-1]
+        s_name = (_s_model or s_raw).split("/")[-1]
+        # If any leg is TokioAI, show "TokioAI" as provider
+        if _p_prov or _s_prov:
+            provider_pretty = "TokioAI"
         dual_badge = f"\033[48;5;57m\033[1m DUAL \033[0m"
         _safe_print(f"    {dual_badge}  \033[48;5;22m\033[1m {p_name} \033[0m {C_GRAY}+ \033[48;5;94m\033[1m {s_name} \033[0m {C_GRAY}via {provider_pretty} • {mode_str}{C_RESET}")
     else:
         # Single-model banner badge
         color_bg = "\033[48;5;24m\033[1m"
-        if "kimi-k3" in model:
-            color_bg = "\033[48;5;94m\033[1m"
-        elif "kimi" in model or "moonshot" in model:
-            color_bg = "\033[48;5;22m\033[1m"
-        elif "claude-opus" in model or "opus" in model:
-            color_bg = "\033[48;5;53m\033[1m"
-        elif "claude-sonnet" in model or "sonnet" in model:
-            color_bg = "\033[48;5;25m\033[1m"
-        elif "gpt" in model or model in ("o1", "o3", "o3-mini"):
-            color_bg = "\033[48;5;28m\033[1m"
-        elif "gemini" in model:
-            color_bg = "\033[48;5;31m\033[1m"
-        short = model.split("/")[-1][:18]
-        _safe_print(f"    {color_bg} {short} \033[0m {C_GRAY}via {provider_pretty} • {mode_str}{C_RESET}")
+        is_tokioai_tier = model.startswith("tokioai-")
+        if is_tokioai_tier:
+            color_bg = "\033[48;5;99m\033[1m"
+            # Resolve the tier to show backend info
+            from tokioai_cli.ops import resolve_tokioai_model as _resolve_tkai_banner
+            _r_prov, _r_model = _resolve_tkai_banner(model)
+            short = model.replace("tokioai-", "tkai-")
+            backend_info = f" → {_r_model}" if _r_prov else ""
+            provider_pretty = "TokioAI"
+            _safe_print(f"    {color_bg} {short} \033[0m{C_GRAY}{backend_info} via {provider_pretty} • {mode_str}{C_RESET}")
+        else:
+            if "kimi-k3" in model:
+                color_bg = "\033[48;5;94m\033[1m"
+            elif "kimi" in model or "moonshot" in model:
+                color_bg = "\033[48;5;22m\033[1m"
+            elif "claude-opus" in model or "opus" in model:
+                color_bg = "\033[48;5;53m\033[1m"
+            elif "claude-sonnet" in model or "sonnet" in model:
+                color_bg = "\033[48;5;25m\033[1m"
+            elif "gpt" in model or model in ("o1", "o3", "o3-mini"):
+                color_bg = "\033[48;5;28m\033[1m"
+            elif "gemini" in model:
+                color_bg = "\033[48;5;31m\033[1m"
+            short = model.split("/")[-1][:18]
+            _safe_print(f"    {color_bg} {short} \033[0m {C_GRAY}via {provider_pretty} • {mode_str}{C_RESET}")
     _safe_print()
     _safe_print(f"    {C_GRAY}  Type {C_BRIGHT_CYAN}?{C_GRAY} for help • {C_BRIGHT_YELLOW}Tab{C_GRAY} to complete • {C_BRIGHT_YELLOW}Ctrl+C{C_GRAY} to cancel{C_RESET}")
     _safe_print()
@@ -1719,11 +1746,23 @@ def run_interactive(
     current_provider = provider_override or PROVIDER
     current_model = model_override or MODEL
 
-    # Dual mode: choose provider based on whether the model string uses OpenRouter IDs (org/name)
-    # or Moonshot direct IDs (plain model names). Default dual alias is Moonshot direct.
+    # Dual mode: choose provider based on model IDs in the dual string.
+    # TokioOps.__init__ handles full resolution, but we set current_provider for the banner.
     if isinstance(current_model, str) and current_model.startswith("dual:"):
         dual_body = current_model[5:]
-        current_provider = "openrouter" if "/" in dual_body else "kimi"
+        if "/" in dual_body:
+            current_provider = "openrouter"
+        elif "tokioai-" in dual_body:
+            # TokioAI tiers — let TokioOps resolve, provider will be set after init
+            current_provider = "tokioai"
+        elif "claude" in dual_body:
+            current_provider = "anthropic-vertex" if VERTEX_PROJECT else "anthropic"
+        elif "gpt" in dual_body or "o1" in dual_body or "o3" in dual_body:
+            current_provider = "openai"
+        elif "gemini" in dual_body:
+            current_provider = "gemini"
+        else:
+            current_provider = "kimi"
 
     # Validate minimum config
     if current_provider in ("anthropic-vertex", "claude-vertex", "vertex") and not VERTEX_PROJECT:
@@ -1755,7 +1794,15 @@ def run_interactive(
         _safe_print(f"\n  {C_BRIGHT_RED}✗ Failed to initialize: {e}{C_RESET}")
         return
 
-    _safe_print(f"  {C_BRIGHT_GREEN}✓{C_RESET} Connected ({C_BRIGHT_CYAN}{current_model}{C_RESET} via {C_GRAY}{current_provider}{C_RESET})")
+    # Display connection info — show TokioAI tier if applicable
+    _init_tier = getattr(ops, "_tokioai_tier", None)
+    if ops.is_dual_mode:
+        _safe_print(f"  {C_BRIGHT_GREEN}✓{C_RESET} Connected ({C_BRIGHT_CYAN}{current_model}{C_RESET} via {C_GRAY}{ops.provider_display_name}{C_RESET})")
+    elif _init_tier:
+        _short_init = _init_tier.replace("tokioai-", "tkai-")
+        _safe_print(f"  {C_BRIGHT_GREEN}✓{C_RESET} Connected ({C_BRIGHT_CYAN}{_short_init}{C_RESET} → {C_GRAY}{ops.model}{C_RESET} via {C_GRAY}TokioAI{C_RESET})")
+    else:
+        _safe_print(f"  {C_BRIGHT_GREEN}✓{C_RESET} Connected ({C_BRIGHT_CYAN}{current_model}{C_RESET} via {C_GRAY}{current_provider}{C_RESET})")
 
     ops._max_rounds = max_rounds
     ops._max_time = max_time
@@ -2001,44 +2048,55 @@ def run_interactive(
                 _safe_print(f"  {C_GRAY}Usage: safety allow <value>{C_RESET}")
             continue
 
-        # Model switch
-        if lower == "model":
+        # Model switch — supports both "model" and "/model" prefix
+        if lower in ("model", "/model"):
             _safe_print(f"\n  {_model_status_line(ops)}")
             if ops.is_dual_mode:
                 _safe_print(f"  {C_GRAY}Mode: dual-router auto | threshold={ops.router.threshold} | force: 'force k2.7' / 'force k3' / 'force auto'{C_RESET}")
             _safe_print(f"  {C_GRAY}Switch: model <name>  |  List: models{C_RESET}")
             continue
 
+        # Accept both "model xxx" and "/model xxx"
+        _model_cmd_prefix = None
         if lower.startswith("model "):
-            new_model_name = lower[6:].strip()
+            _model_cmd_prefix = "model "
+        elif lower.startswith("/model "):
+            _model_cmd_prefix = "/model "
+
+        if _model_cmd_prefix:
+            new_model_name = lower[len(_model_cmd_prefix):].strip()
             new_model = resolve_model(new_model_name)
-            old_model = ops.model
+            # old_model: show short tier name if currently in TokioAI mode, else raw model
+            _cur_tier = getattr(ops, "_tokioai_tier", None)
+            old_model = _cur_tier.replace("tokioai-", "tkai-") if _cur_tier else ops.model
             new_provider = current_provider
             need_new_client = False
 
             # ── Dual-model router mode ──
             if new_model.startswith("dual:"):
-                dual_body = new_model[5:]
-                is_openrouter_dual = "/" in dual_body
-                dual_key = os.getenv("OPENROUTER_API_KEY") if is_openrouter_dual else (os.getenv("KIMI_API_KEY") or os.getenv("MOONSHOT_API_KEY"))
-                if not dual_key:
-                    need_var = "OPENROUTER_API_KEY" if is_openrouter_dual else "KIMI_API_KEY / MOONSHOT_API_KEY"
-                    _safe_print(f"  {C_BRIGHT_YELLOW}!{C_RESET}  Dual mode requires {need_var}. Run: tokioai --setup")
-                    continue
                 try:
                     old_msgs = ops._messages
-                    dual_provider = "openrouter" if is_openrouter_dual else "kimi"
-                    ops = TokioOps(provider=dual_provider, model=new_model)
+                    old_client_type = ops._client_type
+                    # TokioOps.__init__ handles all dual routing (kimi, vertex, openrouter, cross-provider)
+                    ops = TokioOps(model=new_model)
                     ops._messages = old_msgs
+                    # Convert messages if provider format changed
+                    if old_client_type != ops._client_type and old_msgs:
+                        ops._convert_messages_for_provider(ops._client_type)
                     ops._max_rounds = max_rounds
                     ops._max_time = max_time
-                    current_provider = dual_provider
+                    current_provider = ops._provider_name
                     current_model = new_model
-                    p_badge = "\033[48;5;22m\033[1m K2.7 \033[0m"
-                    s_badge = "\033[48;5;94m\033[1m K3 \033[0m"
-                    _safe_print(f"  {C_BRIGHT_GREEN}OK{C_RESET} {old_model} -> {p_badge} + {s_badge} {C_GRAY}(DUAL ROUTER){C_RESET}")
-                    _safe_print(f"  {C_GRAY}Auto-routes: simple -> K2.7-code, complex -> K3{C_RESET}")
-                    _safe_print(f"  {C_GRAY}Commands: dual (stats), threshold N, force k2.7/k3/auto{C_RESET}")
+                    if ops._router:
+                        p_badge = ops._router.format_badge_box(ops._router.primary_model)
+                        s_badge = ops._router.format_badge_box(ops._router.secondary_model)
+                        p_pretty = ops._router.format_model_pretty(ops._router.primary_model)
+                        s_pretty = ops._router.format_model_pretty(ops._router.secondary_model)
+                        _safe_print(f"  {C_BRIGHT_GREEN}OK{C_RESET} {old_model} -> {p_badge} + {s_badge} {C_GRAY}(DUAL ROUTER){C_RESET}")
+                        _safe_print(f"  {C_GRAY}Auto-routes: simple -> {p_pretty}, complex -> {s_pretty}{C_RESET}")
+                        _safe_print(f"  {C_GRAY}Commands: dual (stats), threshold N, force auto{C_RESET}")
+                    else:
+                        _safe_print(f"  {C_BRIGHT_GREEN}OK{C_RESET} {old_model} -> {new_model}")
                 except Exception as e:
                     _safe_print(f"  {C_BRIGHT_RED}!{C_RESET} Failed: {e}")
                 continue
@@ -2085,6 +2143,18 @@ def run_interactive(
                 elif not os.getenv("OPENAI_API_KEY"):
                     _safe_print(f"  {C_BRIGHT_YELLOW}⚠{C_RESET}  OpenAI requires OPENAI_API_KEY. Run: tokioai --setup")
                     continue
+            elif new_model.startswith("tokioai-"):
+                # TokioAI provider routing -- resolve to real backend
+                from tokioai_cli.ops import resolve_tokioai_model
+                tkai_tier = new_model  # preserve tier name for display
+                real_prov, real_model = resolve_tokioai_model(new_model)
+                if real_prov:
+                    new_provider = real_prov
+                    new_model = real_model
+                    need_new_client = (new_provider != current_provider)
+                else:
+                    _safe_print(f"  {C_BRIGHT_YELLOW}⚠{C_RESET}  Unknown TokioAI tier: {new_model}")
+                    continue
             elif ("kimi" in new_model or "moonshot" in new_model) and current_provider not in ("kimi", "moonshot"):
                 kimi_key = os.getenv("KIMI_API_KEY") or os.getenv("MOONSHOT_API_KEY")
                 if kimi_key:
@@ -2104,6 +2174,9 @@ def run_interactive(
                     _safe_print(f"  {C_BRIGHT_YELLOW}⚠{C_RESET}  Claude requires credentials. Run: tokioai --setup")
                     continue
 
+            # Check if this is a TokioAI tier switch (set by the tokioai- block above)
+            _tkai_tier = locals().get("tkai_tier", None)
+
             try:
                 if need_new_client:
                     # Swap credentials when switching between Claude and Gemini
@@ -2116,18 +2189,38 @@ def run_interactive(
                         if claude_sa and os.path.isfile(claude_sa):
                             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = claude_sa
                     old_msgs = ops._messages
+                    old_client_type = ops._client_type
                     ops = TokioOps(provider=new_provider, model=new_model)
                     ops._messages = old_msgs
+                    # Convert messages if provider format changed (e.g. kimi->vertex)
+                    if old_client_type != ops._client_type and old_msgs:
+                        ops._convert_messages_for_provider(ops._client_type)
                     current_provider = new_provider
                 else:
                     ops.switch_model(new_model)
+
+                # If TokioAI tier, set the tier tracker on the ops instance
+                if _tkai_tier:
+                    ops._tokioai_tier = _tkai_tier
+
                 ops._max_rounds = max_rounds
                 ops._max_time = max_time
-                current_model = new_model
-                label = f" (via {new_provider})" if need_new_client else ""
-                _safe_print(f"  {C_BRIGHT_GREEN}✓{C_RESET} {old_model} → {C_BRIGHT_CYAN}{new_model}{C_RESET}{label}")
+                # Track current_model as tier name if TokioAI, else raw model
+                current_model = _tkai_tier if _tkai_tier else new_model
+
+                # Build display message
+                if _tkai_tier:
+                    # TokioAI tier: show "old -> tkai-fast (kimi-k3 via TokioAI)"
+                    _short_tier = _tkai_tier.replace("tokioai-", "tkai-")
+                    _safe_print(f"  {C_BRIGHT_GREEN}✓{C_RESET} {old_model} → {C_BRIGHT_CYAN}{_short_tier}{C_RESET} {C_GRAY}({new_model} via TokioAI){C_RESET}")
+                else:
+                    label = f" {C_GRAY}(via {new_provider}){C_RESET}" if need_new_client else ""
+                    _safe_print(f"  {C_BRIGHT_GREEN}✓{C_RESET} {old_model} → {C_BRIGHT_CYAN}{new_model}{C_RESET}{label}")
             except Exception as e:
                 _safe_print(f"  {C_BRIGHT_RED}✗{C_RESET} Failed: {e}")
+            finally:
+                # Clear tkai_tier so it doesn't leak into non-tokioai switches
+                tkai_tier = None  # noqa: F841
             continue
 
         # Unlimited toggle
@@ -2716,35 +2809,75 @@ def main():
     parser.add_argument("--setup", action="store_true",
                         help="Run interactive setup wizard")
 
-    # TokioAI Vivo (autonomous organism mode)
+    # TokioAI Vivo v2.0 (autonomous agent mode)
     parser.add_argument("--vivo", action="store_true",
-                        help="Enter autonomous organism mode")
+                        help="Enter autonomous agent mode")
+    parser.add_argument("--vivo-resume", action="store_true",
+                        help="Resume previous vivo session (keeps objective, progress, and reports)")
     parser.add_argument("--vivo-stop", action="store_true",
                         help="Stop a running vivo instance")
     parser.add_argument("--vivo-status", action="store_true",
                         help="Show vivo status")
+    parser.add_argument("--vivo-follow", action="store_true",
+                        help="Follow vivo output in real-time")
+    parser.add_argument("--vivo-log", action="store_true",
+                        help="Show vivo work log")
+    parser.add_argument("--vivo-reset", action="store_true",
+                        help="Reset vivo state for fresh start")
     parser.add_argument("--objective", default=None,
-                        help="Set vivo objective")
+                        help="Set vivo objective (what to work on)")
     parser.add_argument("--autonomy", type=int, default=None, choices=[0, 1, 2, 3],
-                        help="Autonomy level (0=sim,1=assisted,2=trusted,3=full)")
+                        help="Autonomy level (0=sim, 1=assisted, 2=trusted, 3=full)")
     parser.add_argument("--dry-run", action="store_true", default=None,
-                        help="Simulate actions (vivo)")
+                        help="Simulate all actions (vivo)")
     parser.add_argument("--no-dry-run", action="store_true", default=None,
-                        help="Actually execute approved actions (vivo)")
+                        help="Execute real actions (vivo)")
     parser.add_argument("--budget-hour", type=float, default=None,
                         help="Hourly budget USD")
     parser.add_argument("--budget-session", type=float, default=None,
                         help="Session budget USD")
     parser.add_argument("--gear2-model", default=None,
-                        help="Gear 2 model")
+                        help="Work model (alias or full name)")
     parser.add_argument("--gear3-model", default=None,
-                        help="Gear 3 model")
+                        help="Deep reasoning model")
     parser.add_argument("--tick", type=float, default=None,
-                        help="Tick interval seconds")
+                        help="Seconds between work cycles")
     parser.add_argument("--report-every", type=float, default=None,
                         help="Report interval seconds")
+    parser.add_argument("--hours", type=float, default=None,
+                        help="Max runtime in hours (e.g. --hours 3)")
+    parser.add_argument("--bg", action="store_true", default=False,
+                        help="Run vivo in background (detached from terminal)")
+    parser.add_argument("--dual", action="store_true", default=False,
+                        help="Dual-model mode: gear2 for routine, gear3 for deep reasoning")
+    parser.add_argument("--sandbox-dir", default=None,
+                        help="Restrict vivo write/edit to this directory")
     parser.add_argument("--cortex-interval", type=float, default=None,
-                        help="Cortex Gear-2 review interval seconds")
+                        help="Legacy: cortex interval")
+
+    # v4.0 Git-Safe coding
+    parser.add_argument("--git-safe", action="store_true", default=True,
+                        help="Enable git-safe mode (default: on)")
+    parser.add_argument("--no-git-tests", action="store_true", default=False,
+                        help="Skip test requirement before git commit")
+    parser.add_argument("--git-auto-rollback", action="store_true", default=True,
+                        help="Auto-rollback on post-commit test failure (default: on)")
+    parser.add_argument("--no-git-auto-rollback", action="store_true", default=False,
+                        help="Disable auto-rollback")
+    parser.add_argument("--git-test-cmd", default=None,
+                        help="Custom test command for pre-commit checks")
+    parser.add_argument("--git-max-files", type=int, default=None,
+                        help="Max files per commit (default: 10)")
+    parser.add_argument("--git-max-lines", type=int, default=None,
+                        help="Max lines changed per commit warning (default: 500)")
+
+    # v3.5 Vault
+    parser.add_argument("--vault-set", nargs=2, metavar=("KEY", "VALUE"), default=None,
+                        help="Set a secret in the vault: --vault-set API_KEY sk-xxx")
+    parser.add_argument("--vault-list", action="store_true", default=False,
+                        help="List vault secret keys (values masked)")
+    parser.add_argument("--vault-delete", default=None, metavar="KEY",
+                        help="Delete a secret from the vault")
 
     args = parser.parse_args()
 
