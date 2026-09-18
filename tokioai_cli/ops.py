@@ -15,6 +15,7 @@ import random
 import subprocess
 import sys
 import time
+from datetime import datetime
 from typing import Optional, Callable
 
 from tokioai_cli import safety as _safety
@@ -1301,6 +1302,36 @@ class TokioOps:
         else:
             self._model = model or MODEL
 
+        # ── Smart provider auto-routing ──
+        # When user explicitly picks a model (-m sonnet), auto-route to the correct provider
+        # even if the global TOKIOAI_PROVIDER is set to something else (e.g. openrouter).
+        # Only override if provider was NOT explicitly passed (i.e., inherited from env).
+        if not provider and model and isinstance(self._model, str) and not self._model.startswith("dual:"):
+            _m = self._model.lower()
+            if "claude" in _m and not "/" in _m:
+                # Claude model without org/ prefix -> route to Vertex if configured
+                _vp = os.getenv("VERTEX_PROJECT") or os.getenv("ANTHROPIC_VERTEX_PROJECT_ID", "")
+                if _vp:
+                    self._provider_name = "anthropic-vertex"
+            elif _m.startswith("kimi-") or _m.startswith("moonshot"):
+                # Kimi/Moonshot models -> route to kimi provider
+                _kk = os.getenv("TOKIOAI_API_KEY") or os.getenv("KIMI_API_KEY", "")
+                if _kk:
+                    self._provider_name = "kimi"
+            elif _m.startswith("gemini"):
+                # Gemini models -> route to gemini provider
+                _gk = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
+                _gvp = os.getenv("GEMINI_VERTEX_PROJECT", "")
+                if _gvp:
+                    self._provider_name = "gemini-vertex"
+                elif _gk:
+                    self._provider_name = "gemini"
+            elif _m.startswith("gpt") or _m.startswith("o1") or _m.startswith("o3"):
+                # OpenAI models -> route to openai provider
+                _ok = os.getenv("OPENAI_API_KEY", "")
+                if _ok:
+                    self._provider_name = "openai"
+
         # ── TokioAI provider resolution ──
         # If provider is "tokioai", resolve model to real backend.
         # Skip if model is a dual string — dual handler resolves tokioai tiers itself.
@@ -1359,16 +1390,16 @@ class TokioOps:
                     threshold=threshold,
                 )
                 # Detect provider for dual pair:
-                # 1. OpenRouter models (org/name format with /)
-                # 2. Claude models on Vertex
-                # 3. Kimi/Moonshot models
-                # 4. Keep existing provider if explicitly set
+                # If already on TokioAI provider, KEEP it -- all models go through the router.
+                # Otherwise, detect from model names.
+                _original_provider = self._provider_name
                 any_openrouter_model = "/" in primary or "/" in secondary
                 any_claude_model = "claude" in primary or "claude" in secondary
                 any_kimi_model = "kimi" in primary or "moonshot" in primary
                 # If TokioAI tier was in the dual string, keep tokioai provider
                 any_tokioai_tier = "tokioai-" in (self._dual_model_string or dual_string)
-                if any_tokioai_tier:
+                if _original_provider == "tokioai" or any_tokioai_tier:
+                    # Stay on TokioAI router -- it handles kimi/claude models
                     self._provider_name = "tokioai"
                 elif any_openrouter_model:
                     self._provider_name = "openrouter"
@@ -1399,6 +1430,7 @@ class TokioOps:
         self._last_tracked_output = 0
         self._compaction_count = 0
         self._compact_failures = 0  # circuit breaker for compact
+        self._compaction_snapshot = ""  # snapshot of memory+tasks at compaction time
         self._state = "idle"  # state machine: idle → thinking → tool_exec → done
         self._hooks: dict[str, list[Callable]] = {}  # event → [callbacks]
 
@@ -1451,8 +1483,13 @@ class TokioOps:
         return clean, ""
 
     def _safe_system_prompt(self) -> str:
-        """Return the system prompt with PII/secrets redacted."""
+        """Return the system prompt with PII/secrets redacted.
+        If a compaction snapshot exists, append it so the LLM always sees
+        critical context even after old messages are summarized."""
         raw = _build_system_prompt()
+        # Inject compaction snapshot -- critical for memory continuity
+        if getattr(self, '_compaction_snapshot', '') and self._compaction_count > 0:
+            raw += "\n\n" + self._compaction_snapshot
         if not self._guard:
             return raw
         clean, _ = self._guard.sanitize(raw)
@@ -1644,7 +1681,10 @@ class TokioOps:
                 self._model = primary
 
                 # Determine provider
-                if p_real_prov:
+                # If already on TokioAI, stay on TokioAI (router handles all models)
+                if self._provider_name == "tokioai":
+                    actual_provider = "tokioai"
+                elif p_real_prov:
                     actual_provider = p_real_prov
                 elif "/" in primary or "/" in secondary:
                     actual_provider = "openrouter"
@@ -1665,6 +1705,26 @@ class TokioOps:
         # Resolve tokioai provider + model to real backend
         actual_provider = new_provider
         actual_model = new_model
+
+        # When on TokioAI provider, map external model names to TokioAI tiers
+        # (the router only accepts tokioai-max, tokioai-code, tokioai-fast)
+        if self._provider_name == "tokioai" and not new_model.startswith("tokioai-"):
+            _TOKIOAI_MODEL_MAP = {
+                "claude-opus-4-6": "tokioai-max", "claude-sonnet-4-6": "tokioai-max",
+                "claude-sonnet-4-20250514": "tokioai-max", "claude-3-opus-20240229": "tokioai-max",
+                "kimi-k3": "tokioai-max", "kimi-k2-0711-preview": "tokioai-max",
+                "kimi-k2.7-code": "tokioai-code", "deepseek-coder": "tokioai-code",
+                "gpt-4o": "tokioai-max", "gpt-4o-mini": "tokioai-fast",
+                "gemini-2.5-flash": "tokioai-fast", "gemini-2.5-pro": "tokioai-max",
+            }
+            mapped = _TOKIOAI_MODEL_MAP.get(new_model)
+            if not mapped:
+                mapped = "tokioai-code" if "code" in new_model else (
+                    "tokioai-fast" if any(x in new_model for x in ("fast", "flash", "mini")) else "tokioai-max"
+                )
+            actual_model = mapped
+            new_model = mapped  # fall through to tokioai resolution below
+
         if new_provider == "tokioai" or (not new_provider and new_model.startswith("tokioai-")):
             self._tokioai_tier = new_model  # preserve tier name
             real_prov, real_model = resolve_tokioai_model(new_model)
@@ -2085,6 +2145,55 @@ class TokioOps:
         ] + recent_msgs
 
         self._compaction_count += 1
+
+        # BUILD COMPACTION SNAPSHOT for system prompt injection
+        # This is the KEY anti-amnesia mechanism: the snapshot gets appended to
+        # the system prompt (via _safe_system_prompt) so the LLM ALWAYS sees
+        # critical context, even after messages are compacted away.
+        try:
+            _snap_parts = []
+            # 1. Active tasks with full context
+            _snap_tasks = _load_tasks()
+            _snap_active = [t for t in _snap_tasks if t.get("status") != "done"]
+            if _snap_active:
+                _snap_lines = []
+                for _st in _snap_active[:10]:  # max 10 tasks
+                    _sl = "[%s] #%s: %s (%s)" % (
+                        "~" if _st.get("status") == "in_progress" else " ",
+                        _st.get("id", "?"), _st.get("task", "?"), _st.get("status", "?"))
+                    if _st.get("plan"):
+                        _sl += "\n    Plan: " + str(_st["plan"])[:400]
+                    if _st.get("current_step"):
+                        _sl += "\n    >>> CURRENT STEP: " + _st["current_step"]
+                    if _st.get("done_steps"):
+                        _sl += "\n    Done: " + ", ".join(str(d) for d in _st["done_steps"])
+                    if _st.get("notes") and len(_st["notes"]) > 0:
+                        _sl += "\n    Last note: " + str(_st["notes"][-1])[:200]
+                    _snap_lines.append(_sl)
+                _snap_parts.append("## Active Tasks (~/.tokioai/tasks.json)\n"
+                    "IMPORTANT: Check these tasks. Update current_step as you progress.\n"
+                    + "\n".join(_snap_lines))
+            # 2. Memory snapshot (pinned + recent)
+            try:
+                from tokioai_cli.memory_optimizer import build_compaction_recovery
+                _snap_mem = build_compaction_recovery()
+                if _snap_mem:
+                    _snap_parts.insert(0, "## Persistent Memory (~/.tokioai/memory.md)\n" + _snap_mem)
+            except Exception:
+                _snap_raw = _load_memory()
+                if _snap_raw:
+                    _snap_parts.insert(0, "## Persistent Memory (~/.tokioai/memory.md)\n" + _snap_raw[:4000])
+            if _snap_parts:
+                self._compaction_snapshot = (
+                    "## COMPACTION SNAPSHOT (auto-generated %s)\n"
+                    "Context was compacted %dx. This snapshot preserves critical state.\n\n"
+                    % (datetime.now().strftime("%Y-%m-%d %H:%M"), self._compaction_count)
+                ) + "\n\n".join(_snap_parts)
+                # Cap snapshot size to avoid bloating system prompt
+                if len(self._compaction_snapshot) > 12000:
+                    self._compaction_snapshot = self._compaction_snapshot[:12000] + "\n...(snapshot truncated)"
+        except Exception:
+            pass  # Never break compaction over snapshot generation
 
         # POST-COMPACTION RECOVERY: inject fresh task context
         try:
@@ -2646,6 +2755,13 @@ class TokioOps:
 
             choice = response.choices[0]
 
+            # ── Reasoning model support ──
+            # Some models (Kimi K3, DeepSeek-R1, etc) return content in reasoning_content
+            # while content is empty. Merge reasoning_content into content if needed.
+            _rc = getattr(choice.message, "reasoning_content", None) or getattr(choice.message, "reasoning", None) or ""
+            if _rc and not (choice.message.content or "").strip():
+                choice.message.content = _rc
+
             # Detect max_tokens truncation — retry with resume prompt
             if getattr(choice, "finish_reason", None) == "length":
                 text_so_far = choice.message.content or ""
@@ -2796,6 +2912,7 @@ class TokioOps:
 
             # Consume stream
             text_chunks = []
+            _reasoning_chunks = []  # buffer for reasoning_content (thinking models)
             tool_calls_acc = {}  # id -> {name, arguments}
             finish_reason = None
 
@@ -2810,6 +2927,12 @@ class TokioOps:
                     if delta.content:
                         text_chunks.append(delta.content)
                         on_token(delta.content)
+
+                    # Buffer reasoning_content silently (thinking models like Kimi K3)
+                    # Only used as fallback if content is empty at end of stream
+                    _rc_delta = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                    if _rc_delta:
+                        _reasoning_chunks.append(_rc_delta)
 
                     # Tool call deltas
                     if delta.tool_calls:
@@ -2841,6 +2964,13 @@ class TokioOps:
                 raise
 
             full_text = "".join(text_chunks)
+
+            # Reasoning model fallback: if content was empty but we got reasoning_content,
+            # use it as the response (happens when max_tokens is too low for thinking models)
+            if not full_text.strip() and _reasoning_chunks:
+                full_text = "".join(_reasoning_chunks)
+                if on_token:
+                    on_token(full_text)
 
             # Estimate token usage if the stream didn't report it in chunks
             # (common with Kimi/Moonshot, some OpenRouter providers)

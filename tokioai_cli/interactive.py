@@ -213,7 +213,20 @@ def _load_dotenv():
                     k = k.strip()
                     v = v.strip().strip('"').strip("'")
                     if k and v:
-                        os.environ.setdefault(k, v)  # setdefault: first file wins
+                        # FORCE-override credential paths — system-wide profile.d scripts
+                        # can set stale values (e.g., rotated service account keys).
+                        # For other vars, setdefault preserves explicit user overrides.
+                        _FORCE_OVERRIDE_KEYS = {
+                            "GOOGLE_APPLICATION_CREDENTIALS",
+                            "CLAUDE_SA_PATH",
+                            "GEMINI_SA_PATH",
+                            "TOKIOAI_PROVIDER",
+                            "TOKIOAI_MODEL",
+                        }
+                        if k in _FORCE_OVERRIDE_KEYS:
+                            os.environ[k] = v  # force: .env always wins for cred paths
+                        else:
+                            os.environ.setdefault(k, v)  # setdefault: first file wins
             if loaded_from is None:
                 loaded_from = env_path
     os.environ["_TOKIOAI_ENV_SOURCE"] = loaded_from or "none"
@@ -1664,7 +1677,7 @@ def process_message(ops: TokioOps, user_input: str):
         secure_stream.flush()
         _safe_write("\n")
 
-    if result and not text_already_printed:
+    if result and (not text_already_printed or result.startswith("API Error")):
         rendered = MarkdownRenderer.render(_mask_sensitive(result))
         _safe_print(f"\n{rendered}")
 
@@ -2101,8 +2114,55 @@ def run_interactive(
                     _safe_print(f"  {C_BRIGHT_RED}!{C_RESET} Failed: {e}")
                 continue
 
+            # ── TokioAI provider guard ──
+            # When the user ONLY has TOKIOAI_API_KEY (no Vertex/OpenRouter/etc credentials),
+            # ALL model switches must stay within the TokioAI router.
+            # Map external model names to the closest TokioAI tier.
+            if current_provider == "tokioai" and not new_model.startswith("tokioai-"):
+                _TOKIOAI_MODEL_MAP = {
+                    # Claude models -> tokioai-max (flagship)
+                    "claude-opus-4-6": "tokioai-max",
+                    "claude-sonnet-4-6": "tokioai-max",
+                    "claude-sonnet-4-20250514": "tokioai-max",
+                    "claude-3-opus-20240229": "tokioai-max",
+                    "claude-3-5-sonnet-20241022": "tokioai-max",
+                    # Kimi models -> direct mapping
+                    "kimi-k3": "tokioai-max",
+                    "kimi-k2.7-code": "tokioai-code",
+                    "kimi-k2-0711-preview": "tokioai-max",
+                    # Code models -> tokioai-code
+                    "deepseek-coder": "tokioai-code",
+                    "deepseek-chat": "tokioai-fast",
+                    # GPT/Gemini -> tokioai-max
+                    "gpt-4o": "tokioai-max",
+                    "gpt-4o-mini": "tokioai-fast",
+                    "gemini-2.5-flash": "tokioai-fast",
+                    "gemini-2.5-pro": "tokioai-max",
+                }
+                mapped_tier = _TOKIOAI_MODEL_MAP.get(new_model)
+                if not mapped_tier:
+                    # Heuristic: if it contains "code" -> code, else max
+                    if "code" in new_model:
+                        mapped_tier = "tokioai-code"
+                    elif any(x in new_model for x in ("fast", "flash", "mini", "small", "lite")):
+                        mapped_tier = "tokioai-fast"
+                    else:
+                        mapped_tier = "tokioai-max"
+                from tokioai_cli.ops import resolve_tokioai_model
+                tkai_tier = mapped_tier
+                real_prov, real_model = resolve_tokioai_model(mapped_tier)
+                if real_prov:
+                    new_provider = real_prov
+                    new_model = real_model
+                    need_new_client = (new_provider != current_provider)
+                    short_tier = mapped_tier.replace("tokioai-", "tkai-")
+                    _safe_print(f"  {C_GRAY}(TokioAI router: mapped to {short_tier}){C_RESET}")
+                else:
+                    _safe_print(f"  {C_BRIGHT_YELLOW}!{C_RESET}  Unknown TokioAI tier: {mapped_tier}")
+                    continue
+
             # OpenRouter models contain "/" (e.g., moonshotai/kimi-k3, anthropic/claude-sonnet-4)
-            if "/" in new_model and current_provider != "openrouter":
+            elif "/" in new_model and current_provider != "openrouter":
                 or_key = os.getenv("OPENROUTER_API_KEY")
                 if or_key:
                     new_provider = "openrouter"
@@ -2163,7 +2223,7 @@ def run_interactive(
                 else:
                     _safe_print(f"  {C_BRIGHT_YELLOW}⚠{C_RESET}  Kimi K2 requires KIMI_API_KEY. Get it at: https://platform.moonshot.cn/")
                     continue
-            elif "claude" in new_model and current_provider not in ("anthropic", "anthropic-vertex", "vertex"):
+            elif "claude" in new_model and current_provider not in ("anthropic", "anthropic-vertex", "vertex", "tokioai"):
                 if VERTEX_PROJECT:
                     new_provider = "anthropic-vertex"
                     need_new_client = True
@@ -2854,6 +2914,18 @@ def main():
                         help="Restrict vivo write/edit to this directory")
     parser.add_argument("--cortex-interval", type=float, default=None,
                         help="Legacy: cortex interval")
+
+    # v5.0 Work Engine integration
+    parser.add_argument("--work", action="store_true", default=None,
+                        help="Enable work mode (autonomous task execution via WorkEngine)")
+    parser.add_argument("--monitor", action="store_true", default=None,
+                        help="Monitor-only mode (disable work engine, use brainstem/cortex)")
+    parser.add_argument("--project-dir", default=None,
+                        help="Working directory for work engine")
+    parser.add_argument("--test-cmd", default=None,
+                        help="Test command (e.g. 'pytest', 'npm test')")
+    parser.add_argument("--work-tick", type=float, default=None,
+                        help="Work cycle interval in seconds (default: 5)")
 
     # v4.0 Git-Safe coding
     parser.add_argument("--git-safe", action="store_true", default=True,

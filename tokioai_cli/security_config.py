@@ -59,6 +59,7 @@ KEY_PREFIX_RULES: dict[str, list[str]] = {
     "anthropic": ["sk-ant-api03-"],
     "openai": ["sk-", "sk-proj-"],
     "gemini": ["AIza"],
+    "tokioai": ["sk-", "tkai-"],  # TokioAI keys: sk- (backend compat) or tkai- (router keys)
     "kimi": ["sk-"],  # Moonshot direct keys also use sk- prefix
     "openrouter": ["sk-or-v1-"],
 }
@@ -131,9 +132,9 @@ def validate_key_for_provider(provider: str, key: str) -> tuple[bool, Optional[s
     # Provider-specific prefix checks
     expected = KEY_PREFIX_RULES.get(provider, [])
     if expected and not any(key.startswith(p) for p in expected):
-        # Kimi and OpenAI both use sk-; OpenRouter is handled above.
-        # If provider is kimi, allow any sk- key (we cannot distinguish from OpenAI).
-        if provider == "kimi" and key.startswith("sk-"):
+        # Kimi, TokioAI, and OpenAI all use sk-; OpenRouter is handled above.
+        # If provider is kimi or tokioai, allow sk- or tkai- keys.
+        if provider in ("kimi", "tokioai") and (key.startswith("sk-") or key.startswith("tkai-")):
             return True, None
         return False, f"API key for provider '{provider}' does not match expected prefix(es): {expected}"
     return True, None
@@ -185,6 +186,9 @@ def decide_provider(
         if provider in ("moonshot",):
             provider = "kimi"
             warnings.append("Provider alias 'moonshot' normalized to 'kimi'")
+        if provider == "tokioai":
+            # TokioAI is our own routing layer -- accept as-is, resolution happens in ops.py
+            return ProviderDecision(provider="tokioai", reason="Explicit TokioAI provider (own routing)", model=model, warnings=warnings)
 
         # If model has org/name format, it is an OpenRouter model.
         if "/" in model and not model.startswith("models/"):
@@ -228,6 +232,8 @@ def decide_provider(
         if (env_keys.get("GEMINI_API_KEY") or env_keys.get("GOOGLE_API_KEY")) and lock == "gemini":
             key = env_keys.get("GEMINI_API_KEY") or env_keys.get("GOOGLE_API_KEY")
             return ProviderDecision(provider="gemini", reason="Auto-detected locked Gemini API key", model=model, key_source="GEMINI_API_KEY")
+        if env_keys.get("TOKIOAI_API_KEY") and lock == "tokioai":
+            return ProviderDecision(provider="tokioai", reason="Auto-detected locked TokioAI API key", model=model, key_source="TOKIOAI_API_KEY")
         if (env_keys.get("KIMI_API_KEY") or env_keys.get("MOONSHOT_API_KEY")) and lock == "kimi":
             return ProviderDecision(provider="kimi", reason="Auto-detected locked Kimi/Moonshot API key", model=model, key_source="KIMI_API_KEY")
         if env_keys.get("OPENROUTER_API_KEY") and lock == "openrouter":
@@ -264,6 +270,13 @@ def decide_provider(
         if not ok:
             warnings.append(err)
         return ProviderDecision(provider="gemini", reason="Auto-detected Gemini API key", model=model, key_source="GEMINI_API_KEY", warnings=warnings)
+
+    if env_keys.get("TOKIOAI_API_KEY"):
+        key = env_keys["TOKIOAI_API_KEY"]
+        ok, err = validate_key_for_provider("tokioai", key)
+        if not ok:
+            warnings.append(err)
+        return ProviderDecision(provider="tokioai", reason="Auto-detected TokioAI API key", model=model, key_source="TOKIOAI_API_KEY", warnings=warnings)
 
     if env_keys.get("KIMI_API_KEY") or env_keys.get("MOONSHOT_API_KEY"):
         key = env_keys.get("KIMI_API_KEY") or env_keys.get("MOONSHOT_API_KEY")

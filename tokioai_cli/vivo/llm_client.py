@@ -65,6 +65,41 @@ class VivoLLMClient:
         out_tok = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
         return text.strip(), in_tok, out_tok
 
+    def _kimi_key(self) -> Optional[str]:
+        for var in ("KIMI_API_KEY", "MOONSHOT_API_KEY", "TOKIOAI_API_KEY"):
+            k = os.getenv(var, "")
+            if k and not k.startswith("sk-or-"):
+                return k
+        return None
+
+    def _call_kimi(self, model: str, messages: List[Dict], temperature: float = 0.2, max_tokens: int = 1024) -> Tuple[str, int, int]:
+        """Direct Moonshot/Kimi API call (non-OpenRouter)."""
+        import requests
+        key = self._kimi_key()
+        if not key:
+            raise RuntimeError("KIMI_API_KEY not set")
+        base_url = os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+        # Moonshot/Kimi models require temperature=1 (fixed)
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 1,
+            "max_tokens": max_tokens,
+        }
+        r = self._client().post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=120)
+        r.raise_for_status()
+        data = r.json()
+        choice = data.get("choices", [{}])[0]
+        text = choice.get("message", {}).get("content") or ""
+        usage = data.get("usage", {})
+        in_tok = usage.get("prompt_tokens", 0)
+        out_tok = usage.get("completion_tokens", 0)
+        return text.strip(), in_tok, out_tok
+
     def _call_tokio_ops(self, model: str, prompt: str) -> Tuple[str, int, int]:
         """Fallback via TokioOps. Returns text and estimated tokens."""
         if self._tokio_ops is None:
@@ -72,7 +107,7 @@ class VivoLLMClient:
             resolved = resolve_model(model)
             self._tokio_ops = TokioOps(provider=self.cfg.provider, model=resolved)
         # We don't have direct token counts from TokioOps easily, so estimate.
-        text = self._tokio_ops.chat(prompt, max_rounds=1)
+        text = self._tokio_ops.chat(prompt)
         in_tok = len(prompt) // 4
         out_tok = len(text) // 4
         return text, in_tok, out_tok
@@ -93,6 +128,8 @@ class VivoLLMClient:
             try:
                 if provider in ("openrouter", "or") or "/" in model or model.startswith("moonshotai/"):
                     text, in_tok, out_tok = self._call_openrouter(model, messages, temperature, max_tokens)
+                elif provider in ("kimi", "moonshot") or model.startswith("kimi-"):
+                    text, in_tok, out_tok = self._call_kimi(model, messages, temperature, max_tokens)
                 else:
                     full_prompt = system_prompt + "\n\n" + user_prompt
                     text, in_tok, out_tok = self._call_tokio_ops(model, full_prompt)

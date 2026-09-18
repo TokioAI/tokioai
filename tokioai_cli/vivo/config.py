@@ -72,6 +72,24 @@ class VivoConfig:
     ])
     allowed_hosts: List[str] = field(default_factory=lambda: ["localhost", "127.0.0.1"])
 
+    # Work Engine (autonomous task execution)
+    work_mode: bool = True  # True = objective-driven work, False = monitoring-only
+    sandbox_dir: Optional[str] = None  # restrict file writes to this dir (None = unrestricted)
+    project_dir: Optional[str] = None  # working directory for work engine
+    test_command: Optional[str] = None  # e.g. "pytest", "npm test" (auto-detected if None)
+    dual_model: bool = True  # use gear2 for routine, gear3 for deep reasoning
+    work_tick_interval: float = 5.0  # seconds between work cycles (separate from monitor tick)
+    monitor_while_working: bool = False  # run brainstem/cortex alongside work engine
+
+    # Git-safe settings (used by work engine)
+    git_branch_prefix: str = "vivo/"
+    git_require_tests: bool = True
+    git_require_review: bool = False
+    git_auto_rollback: bool = True
+    git_auto_pr: bool = False
+    git_max_files_per_commit: int = 10
+    git_max_lines_per_commit: int = 500
+
     # Sensors / integrations
     enable_system_watchdogs: bool = True
     enable_picar_watchdogs: bool = False
