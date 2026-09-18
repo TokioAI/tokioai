@@ -11,6 +11,9 @@ openai>=1.0
 # Gemini (API key or Vertex AI)
 google-genai>=1.0
 
+# YAML config parsing
+pyyaml>=6.0
+
 # SSH to servers (optional)
 paramiko>=3.0
 
