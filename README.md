@@ -7,7 +7,7 @@
 We build autonomous AI agents that act in the real world. Not chatbots -- operators.
 The model is the brain. We build the body.
 
-**[tokioia.com](https://tokioia.com)** | **[[REDACTED_EMAIL_21]](mailto:[REDACTED_EMAIL_22])**
+**[tokioia.com](https://tokioia.com)** 
 
 ---
 
